@@ -77,3 +77,7 @@ npm run build
 - **首屏白屏**：进入页面瞬间的短暂空白是 React SPA 首帧渲染的固有间隙，窗口背景色已与页面主题对齐，视觉上基本无缝。
 - **端口**：后端固定占用 `127.0.0.1:3080`，启动前请确保该端口空闲。
 - **版本**：DeepSeek Harness 处于 developer preview 阶段（当前打包 `@deepseek-ai/dsh@0.1.0-rc.6`），API 可能有破坏性变更，升级需重新验证。
+
+## License
+
+[MIT](LICENSE)
