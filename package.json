@@ -1,0 +1,15 @@
+{
+  "name": "dsh-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tauri shell around the DeepSeek Harness web UI (Node sidecar)",
+  "scripts": {
+    "tauri": "tauri",
+    "prepare:runtime": "powershell -ExecutionPolicy Bypass -File scripts/prepare-runtime.ps1",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

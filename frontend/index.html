@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>DeepSeek Harness</title>
+  <style>
+    :root { color-scheme: light; }
+    html, body {
+      margin: 0; height: 100%;
+      background: #f9fafb; color: #24292f;
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .boot { text-align: center; }
+    .spinner {
+      width: 32px; height: 32px; margin: 0 auto 16px;
+      border: 3px solid #d0d7de; border-top-color: #0969da;
+      border-radius: 50%; animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    p { margin: 0; color: #57606a; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div class="boot">
+    <div class="spinner"></div>
+    <p>正在启动 DeepSeek Harness 后端…</p>
+  </div>
+</body>
+</html>
