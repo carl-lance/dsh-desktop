@@ -9,7 +9,7 @@
 ```
 dsh-desktop.exe（Tauri 2 / Rust 壳，约 30MB 内存）
 │
-├─ WebView2 ──────加载──────▶ http://127.0.0.1:3080（dsh web UI）
+├─ WebView2 ──────加载──────▶ http://127.0.0.1:30080（dsh web UI）
 │
 └─ spawn（std::process）──▶ node.exe + @deepseek-ai/dsh（sidecar 后端）
      └─ DSH_HOME → %APPDATA%\ai.deepseek.dsh-desktop\dsh（用户数据隔离）
