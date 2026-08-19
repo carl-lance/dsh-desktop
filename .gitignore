@@ -1,0 +1,20 @@
+# Node
+node_modules/
+package-lock.json
+
+# Rust / Tauri build output
+src-tauri/target
+
+# Generated runtime bundle (produced by scripts/prepare-runtime.ps1)
+src-tauri/resources/
+
+# Logs
+*.log
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
