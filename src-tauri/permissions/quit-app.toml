@@ -1,0 +1,9 @@
+# Application permission for the `quit_app` command.
+#
+# The command is invoked via `window.__TAURI_INTERNALS__.invoke('quit_app')`
+# by the injected close-confirmation dialog (JS eval'd into the webview on
+# close-requested). Referenced from capabilities as "allow-quit-app".
+[[permission]]
+identifier = "allow-quit-app"
+description = "Allows the quit_app command to exit the application (used by the close-confirmation dialog)."
+commands.allow = ["quit_app"]

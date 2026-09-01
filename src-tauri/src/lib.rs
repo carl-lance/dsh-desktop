@@ -163,6 +163,21 @@ fn navigate_when_ready(app: tauri::AppHandle) {
     });
 }
 
+/// Exit the application for real. Called by the injected close-confirmation
+/// dialog's danger-red button via `invoke('quit_app')`; remote-origin IPC is
+/// scoped to localhost only through the `quit-confirm-remote` capability.
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
+/// JS injected into the webview when a close is requested. It renders a quit
+/// confirmation dialog styled after the dsh design system (mask + blurred
+/// backdrop, rounded card, outline cancel, danger-red confirm). The script
+/// lives in its own file — `assets/quit-confirm.js` — embedded at compile
+/// time; extend it there, no Rust changes needed for pure UI tweaks.
+const QUIT_CONFIRM_SCRIPT: &str = include_str!("../assets/quit-confirm.js");
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -175,6 +190,17 @@ pub fn run() {
                 Err(error) => {
                     eprintln!("dsh-desktop: failed to start backend: {error}");
                     Err(error.into())
+                }
+            }
+        })
+        .invoke_handler(tauri::generate_handler![quit_app])
+        .on_window_event(|window, event| {
+            // Intercept window close: show the injected dsh-styled confirmation
+            // dialog instead of quitting immediately.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                if let Some(webview) = window.app_handle().get_webview_window("main") {
+                    let _ = webview.eval(QUIT_CONFIRM_SCRIPT);
                 }
             }
         })
