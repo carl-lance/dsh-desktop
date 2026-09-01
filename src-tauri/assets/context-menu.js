@@ -47,6 +47,7 @@
     caretStart: -1,      // caret for input/textarea
     caretEnd: -1,
     clipboardText: '',   // clipboard text (async, '' = empty/unreadable)
+    externalLink: null,  // resolved external URL when right-click landed on a link
   };
 
   var MENU_ID = 'dsh-desktop-ctx-menu';
@@ -65,6 +66,16 @@
     if (el.selectionStart == null || el.selectionEnd == null) return null;
     if (el.selectionEnd <= el.selectionStart) return null;
     return { text: el.value.substring(el.selectionStart, el.selectionEnd), start: el.selectionStart, end: el.selectionEnd };
+  }
+  function resolveExternalLink(a) {
+    var href = a.getAttribute('href');
+    if (!href || href.charAt(0) === '#' || /^javascript:/i.test(href)) return null;
+    var url;
+    try { url = new URL(href, location.href); } catch (e) { return null; }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    var h = url.hostname;
+    if (h === '127.0.0.1' || h === 'localhost' || h === 'tauri.localhost') return null;
+    return url.href;
   }
   function reportError(err) {
     window.__dshCtxLastError = String((err && (err.stack || err.message)) || err);
@@ -207,6 +218,17 @@
     hideMenu();
     location.reload();
   }
+  function doOpenLink() {
+    if (!state.externalLink) return;
+    var opener = window.__dshOpenExternal;
+    if (opener) {
+      opener(state.externalLink);
+    } else {
+      var invoke = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke;
+      if (invoke) invoke('open_url', { url: state.externalLink }).catch(function (err) { reportError(err); });
+    }
+    hideMenu();
+  }
 
   /* ---------- menu DOM ---------- */
   var menu, style;
@@ -245,6 +267,7 @@
       paste: '<path d="M5.5 3h5"/><rect x="3.5" y="3.5" width="9" height="10.5" rx="1.5"/><path d="M5.8 7.5h4.4M5.8 10h4.4"/>',
       selectall: '<rect x="2.5" y="3.5" width="11" height="9" rx="1.5"/><path d="M5 6.5h6M5 9.5h6"/>',
       reload: '<path d="M13.8 8a5.8 5.8 0 1 1-1.7-4.1"/><path d="M13.8 1.8V4.9h-3.1"/>',
+      openlink: '<path d="M10 2.5h3.5V6"/><path d="m13.5 2.5-6 6"/><path d="M8.5 5.5h-3a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h5a2 2 0 0 0 2-2v-3"/>',
     };
     return '<span class="dsh-ctx-icon"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths[name] + '</svg></span>';
   }
@@ -270,10 +293,21 @@
       run: doReload },
   ];
 
+  /* 打开外链 sits on top only when the right-click landed on an external link. */
+  function buildItems() {
+    if (!state.externalLink) return ITEMS;
+    return [
+      { id: 'openlink', label: '打开外链', icon: 'openlink',
+        enabled: function () { return true; },
+        run: doOpenLink },
+      { id: 'sep' },
+    ].concat(ITEMS);
+  }
+
   function renderMenu(x, y) {
     ensureDom();
     menu.innerHTML = '';
-    ITEMS.forEach(function (item) {
+    buildItems().forEach(function (item) {
       if (item.id === 'sep') {
         var sep = document.createElement('div');
         sep.className = 'dsh-ctx-sep';
@@ -322,6 +356,8 @@
     state.caretStart = -1;
     state.caretEnd = -1;
     state.clipboardText = '';
+    var linkAnchor = target && target.closest ? target.closest('a[href]') : null;
+    state.externalLink = linkAnchor ? resolveExternalLink(linkAnchor) : null;
 
     if (editable) {
       if (target.selectionStart != null) {

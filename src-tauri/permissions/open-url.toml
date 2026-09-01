@@ -1,0 +1,9 @@
+# Application permission for the `open_url` command.
+#
+# Called via `window.__TAURI_INTERNALS__.invoke('open_url', { url })` by the
+# injected external-links script to open non-local links in the system default
+# browser. Referenced from capabilities as "allow-open-url".
+[[permission]]
+identifier = "allow-open-url"
+description = "Allows opening a URL in the system default browser (open_url command)."
+commands.allow = ["open_url"]

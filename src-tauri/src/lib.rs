@@ -165,10 +165,17 @@ fn navigate_when_ready(app: tauri::AppHandle) {
 
 /// Exit the application for real. Called by the injected close-confirmation
 /// dialog's danger-red button via `invoke('quit_app')`; remote-origin IPC is
-/// scoped to localhost only through the `quit-confirm-remote` capability.
+/// scoped to localhost only through the `remote-ipc` capability.
 #[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
+}
+
+/// Open a URL in the system default browser. Called by the injected
+/// external-links script for non-local links.
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    open::that(&url).map_err(|e| e.to_string())
 }
 
 /// JS injected into the webview when a close is requested. It renders a quit
@@ -184,6 +191,11 @@ const QUIT_CONFIRM_SCRIPT: &str = include_str!("../assets/quit-confirm.js");
 /// `enable_clipboard_access()` so the script can read/write the clipboard from
 /// plain JS (`navigator.clipboard`) — no Rust bridge command is needed.
 const CONTEXT_MENU_SCRIPT: &str = include_str!("../assets/context-menu.js");
+
+/// External-link script injected as a WebView2 initialization script: routes
+/// left-clicks on non-local links to the system default browser via the
+/// `open_url` command (see `assets/external-links.js`).
+const EXTERNAL_LINKS_SCRIPT: &str = include_str!("../assets/external-links.js");
 
 pub fn run() {
     tauri::Builder::default()
@@ -204,6 +216,13 @@ pub fn run() {
             .background_color(tauri::webview::Color(249, 250, 251, 255))
             .enable_clipboard_access()
             .initialization_script(CONTEXT_MENU_SCRIPT)
+            .initialization_script(EXTERNAL_LINKS_SCRIPT)
+            .on_new_window(|url, _features| {
+                // window.open / target=_blank are swallowed by the runtime by
+                // default; route them to the system browser instead.
+                let _ = open::that(url.to_string());
+                tauri::webview::NewWindowResponse::Deny
+            })
             .build()?;
 
             match start_dsh(app) {
@@ -218,7 +237,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![quit_app])
+        .invoke_handler(tauri::generate_handler![quit_app, open_url])
         .on_window_event(|window, event| {
             // Intercept window close: show the injected dsh-styled confirmation
             // dialog instead of quitting immediately.
