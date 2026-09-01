@@ -177,6 +177,18 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Allows opening a URL in the system default browser (open_url command).",
+          "type": "string",
+          "const": "allow-open-url",
+          "markdownDescription": "Allows opening a URL in the system default browser (open_url command)."
+        },
+        {
+          "description": "Allows the quit_app command to exit the application (used by the close-confirmation dialog).",
+          "type": "string",
+          "const": "allow-quit-app",
+          "markdownDescription": "Allows the quit_app command to exit the application (used by the close-confirmation dialog)."
+        },
+        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",

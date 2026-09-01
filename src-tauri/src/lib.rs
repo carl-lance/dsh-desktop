@@ -1,9 +1,9 @@
 // DSH Desktop — Tauri shell around the DeepSeek Harness web UI.
 //
 // Lifecycle:
-//   1. setup: spawn the Node sidecar (`node <runtime>/@deepseek-ai/dsh/lib/bin.js web --port 3080`)
-//   2. poll 127.0.0.1:3080 until the backend is ready
-//   3. navigate the webview to http://127.0.0.1:3080
+//   1. setup: spawn the Node sidecar (`node <runtime>/@deepseek-ai/dsh/lib/bin.js web --port <DSH_PORT>`)
+//   2. poll 127.0.0.1:<DSH_PORT> until the backend is ready
+//   3. navigate the webview to http://127.0.0.1:<DSH_PORT>
 //   4. on exit: kill the sidecar process tree (taskkill /T /F)
 use std::net::TcpStream;
 use std::path::PathBuf;
@@ -17,8 +17,10 @@ use std::os::windows::process::CommandExt;
 
 use tauri::{Manager, RunEvent};
 
-/// Port the web backend listens on (keep in sync with start_dsh).
-const DSH_PORT: u16 = 3080;
+/// Port the web backend listens on. Dev builds (debug, `npm run dev`) use 30080
+/// so a dev instance can run alongside the installed app (which binds 3080) and
+/// the Harness GUI on 3080; release builds keep 3080.
+const DSH_PORT: u16 = if cfg!(debug_assertions) { 30080 } else { 3080 };
 const DSH_BACKEND_READY_TIMEOUT: Duration = Duration::from_secs(120);
 
 struct SidecarState(Mutex<Option<Child>>);
@@ -118,8 +120,14 @@ fn start_dsh(app: &tauri::App) -> Result<Child, Box<dyn std::error::Error>> {
         }
     }
 
-    // Isolate dsh user data under the app config dir.
-    let dsh_home = app.path().app_config_dir()?.join("dsh");
+    // Isolate dsh user data under the app config dir. Dev builds (debug) use a
+    // separate home (`dsh-dev`) so they never read the installed app's config:
+    // cordis.patch.yml overrides, profiles, agent presets, plugins, credentials.
+    let dsh_home = if cfg!(debug_assertions) {
+        app.path().app_config_dir()?.join("dsh-dev")
+    } else {
+        app.path().app_config_dir()?.join("dsh")
+    };
     std::fs::create_dir_all(&dsh_home)?;
 
     let child = Command::new(&node_exe)
@@ -127,6 +135,9 @@ fn start_dsh(app: &tauri::App) -> Result<Child, Box<dyn std::error::Error>> {
         .arg("web")
         .arg("--port")
         .arg(DSH_PORT.to_string())
+        // The UI renders inside the WebView; never hand off to the default
+        // browser (the web profile would otherwise auto-open one on boot).
+        .arg("--no-open")
         .current_dir(&runtime_dir)
         .env("DSH_HOME", &dsh_home)
         .creation_flags(CREATE_NO_WINDOW)
@@ -152,9 +163,68 @@ fn navigate_when_ready(app: tauri::AppHandle) {
     });
 }
 
+/// Exit the application for real. Called by the injected close-confirmation
+/// dialog's danger-red button via `invoke('quit_app')`; remote-origin IPC is
+/// scoped to localhost only through the `remote-ipc` capability.
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
+/// Open a URL in the system default browser. Called by the injected
+/// external-links script for non-local links.
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    open::that(&url).map_err(|e| e.to_string())
+}
+
+/// JS injected into the webview when a close is requested. It renders a quit
+/// confirmation dialog styled after the dsh design system (mask + blurred
+/// backdrop, rounded card, outline cancel, danger-red confirm). The script
+/// lives in its own file — `assets/quit-confirm.js` — embedded at compile
+/// time; extend it there, no Rust changes needed for pure UI tweaks.
+const QUIT_CONFIRM_SCRIPT: &str = include_str!("../assets/quit-confirm.js");
+
+/// Context-menu script injected as a WebView2 initialization script: runs on
+/// every page load (including reloads), so the menu survives the 刷新 item.
+/// Lives in `assets/context-menu.js`; the webview is created with
+/// `enable_clipboard_access()` so the script can read/write the clipboard from
+/// plain JS (`navigator.clipboard`) — no Rust bridge command is needed.
+const CONTEXT_MENU_SCRIPT: &str = include_str!("../assets/context-menu.js");
+
+/// External-link script injected as a WebView2 initialization script: routes
+/// left-clicks on non-local links to the system default browser via the
+/// `open_url` command (see `assets/external-links.js`).
+const EXTERNAL_LINKS_SCRIPT: &str = include_str!("../assets/external-links.js");
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            // Create the main window programmatically so we can attach a
+            // WebView2 initialization script (runs on every page load,
+            // including reloads — the context menu must survive 刷新) and
+            // enable clipboard read access for the injected context menu.
+            // The window config was moved here from tauri.conf.json.
+            tauri::WebviewWindowBuilder::new(
+                app,
+                "main",
+                tauri::WebviewUrl::App("index.html".into()),
+            )
+            .title("DeepSeek Harness")
+            .inner_size(980.0, 600.0)
+            .min_inner_size(800.0, 600.0)
+            .background_color(tauri::webview::Color(249, 250, 251, 255))
+            .enable_clipboard_access()
+            .initialization_script(CONTEXT_MENU_SCRIPT)
+            .initialization_script(EXTERNAL_LINKS_SCRIPT)
+            .on_new_window(|url, _features| {
+                // window.open / target=_blank are swallowed by the runtime by
+                // default; route them to the system browser instead.
+                let _ = open::that(url.to_string());
+                tauri::webview::NewWindowResponse::Deny
+            })
+            .build()?;
+
             match start_dsh(app) {
                 Ok(child) => {
                     app.manage(SidecarState(Mutex::new(Some(child))));
@@ -164,6 +234,17 @@ pub fn run() {
                 Err(error) => {
                     eprintln!("dsh-desktop: failed to start backend: {error}");
                     Err(error.into())
+                }
+            }
+        })
+        .invoke_handler(tauri::generate_handler![quit_app, open_url])
+        .on_window_event(|window, event| {
+            // Intercept window close: show the injected dsh-styled confirmation
+            // dialog instead of quitting immediately.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                if let Some(webview) = window.app_handle().get_webview_window("main") {
+                    let _ = webview.eval(QUIT_CONFIRM_SCRIPT);
                 }
             }
         })

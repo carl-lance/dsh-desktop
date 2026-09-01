@@ -7,17 +7,6 @@
     "frontendDist": "../frontend"
   },
   "app": {
-    "windows": [
-      {
-        "title": "DeepSeek Harness",
-        "width": 980,
-        "height": 600,
-        "minWidth": 800,
-        "minHeight": 600,
-        "url": "index.html",
-        "backgroundColor": "#f9fafb"
-      }
-    ],
     "security": {
       "csp": null
     }

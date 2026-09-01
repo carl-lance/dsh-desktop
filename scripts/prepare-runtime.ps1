@@ -3,7 +3,7 @@
 #   src-tauri/resources/dsh-runtime/  <- npm install of @deepseek-ai/dsh (flat, no symlinks)
 #   src-tauri/resources/node.exe      <- Node 22 runtime binary
 param(
-  [string]$Version = "0.1.0-rc.7"
+  [string]$Version = "0.1.1-rc.2"
 )
 $ErrorActionPreference = "Stop"
 

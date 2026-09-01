@@ -9,14 +9,14 @@
 ```
 dsh-desktop.exe（Tauri 2 / Rust 壳，约 30MB 内存）
 │
-├─ WebView2 ──────加载──────▶ http://127.0.0.1:30080（dsh web UI）
+├─ WebView2 ──────加载──────▶ http://127.0.0.1:3080（dsh web UI；dev 模式 30080）
 │
 └─ spawn（std::process）──▶ node.exe + @deepseek-ai/dsh（sidecar 后端）
-     └─ DSH_HOME → %APPDATA%\ai.deepseek.dsh-desktop\dsh（用户数据隔离）
+     └─ DSH_HOME → %APPDATA%\ai.deepseek.dsh-desktop\dsh（用户数据隔离；dev 模式用 dsh-dev）
 ```
 
 - **后端**：Node.js 22.19 运行时 + npm 安装的 `@deepseek-ai/dsh`，以 sidecar 形式随安装包分发
-- **前端**：dsh 官方 Web UI（React SPA），由后端在 `127.0.0.1:3080` 提供
+- **前端**：dsh 官方 Web UI（React SPA），由后端在 `127.0.0.1:3080`（dev 模式 30080）提供
 - **生命周期**：Rust 侧负责启动后端、轮询端口就绪后导航 WebView、退出时清理整个 sidecar 进程树（`taskkill /T` + Windows Job Object 兜底，任务管理器强杀也不会残留 node 进程）
 
 ## 环境要求
@@ -62,7 +62,12 @@ npm run build
 
 ```
 ├─ src-tauri/                 # Tauri 应用（Rust）
-│  ├─ src/lib.rs              # 生命周期：sidecar 启动/端口轮询/导航/退出清理
+│  ├─ src/lib.rs              # 生命周期：sidecar 启动/窗口创建/端口轮询/导航/退出清理
+│  ├─ assets/quit-confirm.js  # 注入 WebView 的退出确认弹窗脚本（include_str! 编译期嵌入）
+│  ├─ assets/context-menu.js  # 注入 WebView 的右键菜单脚本（初始化脚本，刷新后依然生效）
+│  ├─ assets/external-links.js# 注入 WebView 的外链处理脚本（外链 → 系统默认浏览器）
+│  ├─ permissions/            # 应用命令 ACL 权限（quit_app / open_url → allow-*）
+│  ├─ capabilities/           # 窗口能力配置（含远端 IPC 白名单 remote-ipc）
 │  ├─ tauri.conf.json         # 窗口尺寸、图标、资源打包配置
 │  ├─ resources/              # 运行时资源（node.exe + dsh-runtime，构建时生成，不入库）
 │  └─ icons/                  # 应用图标（DeepSeek Harness 品牌图标）
@@ -75,7 +80,12 @@ npm run build
 
 - **性能**：`npm run dev` 为 debug 构建，执行任务时界面可能卡顿；使用 `npm run build` 的 release 产物可获得正常性能。
 - **首屏白屏**：进入页面瞬间的短暂空白是 React SPA 首帧渲染的固有间隙，窗口背景色已与页面主题对齐，视觉上基本无缝。
-- **端口**：后端固定占用 `127.0.0.1:3080`，启动前请确保该端口空闲。
+- **端口**：release 构建占用 `127.0.0.1:3080`，dev 模式（`npm run dev`）占用 `127.0.0.1:30080`，启动前请确保对应端口空闲。
+- **开发模式隔离**：`npm run dev`（debug 构建）使用独立的 `DSH_HOME`（`%APPDATA%\ai.deepseek.dsh-desktop\dsh-dev`）和端口 30080，不读取安装版的用户配置（`cordis.patch.yml`、profiles、agent presets、插件、凭据），可与安装版同时运行。
+- **不弹浏览器**：UI 在 WebView 内嵌显示，sidecar 以 `--no-open` 启动，不会自动打开默认浏览器。
+- **退出确认**：点击关闭按钮时通过 JS 注入弹出确认框（样式对齐 dsh 弹窗：遮罩 + 毛玻璃 + 圆角卡片，退出按钮为 danger 红），确认后才真正退出。
+- **右键菜单**：WebView 内置右键菜单（剪切/复制/粘贴/全选/刷新），样式对齐 dsh 菜单，无对应内容时自动置灰；右键落在外部链接上时置顶显示"打开外链"（系统浏览器打开）；以初始化脚本注入，页面刷新后依然生效。剪贴板读写走 `navigator.clipboard`（窗口创建时启用了 clipboard access），无需 Rust 桥接。
+- **外链处理**：点击页面上的外部链接（http/https 且非本应用 origin）时，在系统默认浏览器中打开，应用窗口不被替换；`window.open`/`target="_blank"` 弹窗请求同样转系统浏览器。
 - **版本**：DeepSeek Harness 处于 developer preview 阶段（当前打包 `@deepseek-ai/dsh@0.1.0-rc.6`），API 可能有破坏性变更，升级需重新验证。
 
 ## License
