@@ -178,9 +178,34 @@ fn quit_app(app: tauri::AppHandle) {
 /// time; extend it there, no Rust changes needed for pure UI tweaks.
 const QUIT_CONFIRM_SCRIPT: &str = include_str!("../assets/quit-confirm.js");
 
+/// Context-menu script injected as a WebView2 initialization script: runs on
+/// every page load (including reloads), so the menu survives the 刷新 item.
+/// Lives in `assets/context-menu.js`; the webview is created with
+/// `enable_clipboard_access()` so the script can read/write the clipboard from
+/// plain JS (`navigator.clipboard`) — no Rust bridge command is needed.
+const CONTEXT_MENU_SCRIPT: &str = include_str!("../assets/context-menu.js");
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            // Create the main window programmatically so we can attach a
+            // WebView2 initialization script (runs on every page load,
+            // including reloads — the context menu must survive 刷新) and
+            // enable clipboard read access for the injected context menu.
+            // The window config was moved here from tauri.conf.json.
+            tauri::WebviewWindowBuilder::new(
+                app,
+                "main",
+                tauri::WebviewUrl::App("index.html".into()),
+            )
+            .title("DeepSeek Harness")
+            .inner_size(980.0, 600.0)
+            .min_inner_size(800.0, 600.0)
+            .background_color(tauri::webview::Color(249, 250, 251, 255))
+            .enable_clipboard_access()
+            .initialization_script(CONTEXT_MENU_SCRIPT)
+            .build()?;
+
             match start_dsh(app) {
                 Ok(child) => {
                     app.manage(SidecarState(Mutex::new(Some(child))));

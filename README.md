@@ -62,8 +62,9 @@ npm run build
 
 ```
 ├─ src-tauri/                 # Tauri 应用（Rust）
-│  ├─ src/lib.rs              # 生命周期：sidecar 启动/端口轮询/导航/退出清理
+│  ├─ src/lib.rs              # 生命周期：sidecar 启动/窗口创建/端口轮询/导航/退出清理
 │  ├─ assets/quit-confirm.js  # 注入 WebView 的退出确认弹窗脚本（include_str! 编译期嵌入）
+│  ├─ assets/context-menu.js  # 注入 WebView 的右键菜单脚本（初始化脚本，刷新后依然生效）
 │  ├─ permissions/            # 应用命令 ACL 权限（quit_app → allow-quit-app）
 │  ├─ capabilities/           # 窗口能力配置（含远端 IPC 白名单 quit-confirm-remote）
 │  ├─ tauri.conf.json         # 窗口尺寸、图标、资源打包配置
@@ -82,6 +83,7 @@ npm run build
 - **开发模式隔离**：`npm run dev`（debug 构建）使用独立的 `DSH_HOME`（`%APPDATA%\ai.deepseek.dsh-desktop\dsh-dev`）和端口 30080，不读取安装版的用户配置（`cordis.patch.yml`、profiles、agent presets、插件、凭据），可与安装版同时运行。
 - **不弹浏览器**：UI 在 WebView 内嵌显示，sidecar 以 `--no-open` 启动，不会自动打开默认浏览器。
 - **退出确认**：点击关闭按钮时通过 JS 注入弹出确认框（样式对齐 dsh 弹窗：遮罩 + 毛玻璃 + 圆角卡片，退出按钮为 danger 红），确认后才真正退出。
+- **右键菜单**：WebView 内置右键菜单（剪切/复制/粘贴/全选/刷新），样式对齐 dsh 菜单，无对应内容时自动置灰；以初始化脚本注入，页面刷新后依然生效。剪贴板读写走 `navigator.clipboard`（窗口创建时启用了 clipboard access），无需 Rust 桥接。
 - **版本**：DeepSeek Harness 处于 developer preview 阶段（当前打包 `@deepseek-ai/dsh@0.1.0-rc.6`），API 可能有破坏性变更，升级需重新验证。
 
 ## License
