@@ -1,9 +1,9 @@
 // DSH Desktop — Tauri shell around the DeepSeek Harness web UI.
 //
 // Lifecycle:
-//   1. setup: spawn the Node sidecar (`node <runtime>/@deepseek-ai/dsh/lib/bin.js web --port 3080`)
-//   2. poll 127.0.0.1:3080 until the backend is ready
-//   3. navigate the webview to http://127.0.0.1:3080
+//   1. setup: spawn the Node sidecar (`node <runtime>/@deepseek-ai/dsh/lib/bin.js web --port <DSH_PORT>`)
+//   2. poll 127.0.0.1:<DSH_PORT> until the backend is ready
+//   3. navigate the webview to http://127.0.0.1:<DSH_PORT>
 //   4. on exit: kill the sidecar process tree (taskkill /T /F)
 use std::net::TcpStream;
 use std::path::PathBuf;
@@ -17,8 +17,10 @@ use std::os::windows::process::CommandExt;
 
 use tauri::{Manager, RunEvent};
 
-/// Port the web backend listens on (keep in sync with start_dsh).
-const DSH_PORT: u16 = 3080;
+/// Port the web backend listens on. Dev builds (debug, `npm run dev`) use 30080
+/// so a dev instance can run alongside the installed app (which binds 3080) and
+/// the Harness GUI on 3080; release builds keep 3080.
+const DSH_PORT: u16 = if cfg!(debug_assertions) { 30080 } else { 3080 };
 const DSH_BACKEND_READY_TIMEOUT: Duration = Duration::from_secs(120);
 
 struct SidecarState(Mutex<Option<Child>>);
@@ -118,8 +120,14 @@ fn start_dsh(app: &tauri::App) -> Result<Child, Box<dyn std::error::Error>> {
         }
     }
 
-    // Isolate dsh user data under the app config dir.
-    let dsh_home = app.path().app_config_dir()?.join("dsh");
+    // Isolate dsh user data under the app config dir. Dev builds (debug) use a
+    // separate home (`dsh-dev`) so they never read the installed app's config:
+    // cordis.patch.yml overrides, profiles, agent presets, plugins, credentials.
+    let dsh_home = if cfg!(debug_assertions) {
+        app.path().app_config_dir()?.join("dsh-dev")
+    } else {
+        app.path().app_config_dir()?.join("dsh")
+    };
     std::fs::create_dir_all(&dsh_home)?;
 
     let child = Command::new(&node_exe)
@@ -127,6 +135,9 @@ fn start_dsh(app: &tauri::App) -> Result<Child, Box<dyn std::error::Error>> {
         .arg("web")
         .arg("--port")
         .arg(DSH_PORT.to_string())
+        // The UI renders inside the WebView; never hand off to the default
+        // browser (the web profile would otherwise auto-open one on boot).
+        .arg("--no-open")
         .current_dir(&runtime_dir)
         .env("DSH_HOME", &dsh_home)
         .creation_flags(CREATE_NO_WINDOW)

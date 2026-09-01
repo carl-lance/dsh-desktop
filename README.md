@@ -9,14 +9,14 @@
 ```
 dsh-desktop.exe（Tauri 2 / Rust 壳，约 30MB 内存）
 │
-├─ WebView2 ──────加载──────▶ http://127.0.0.1:30080（dsh web UI）
+├─ WebView2 ──────加载──────▶ http://127.0.0.1:3080（dsh web UI；dev 模式 30080）
 │
 └─ spawn（std::process）──▶ node.exe + @deepseek-ai/dsh（sidecar 后端）
-     └─ DSH_HOME → %APPDATA%\ai.deepseek.dsh-desktop\dsh（用户数据隔离）
+     └─ DSH_HOME → %APPDATA%\ai.deepseek.dsh-desktop\dsh（用户数据隔离；dev 模式用 dsh-dev）
 ```
 
 - **后端**：Node.js 22.19 运行时 + npm 安装的 `@deepseek-ai/dsh`，以 sidecar 形式随安装包分发
-- **前端**：dsh 官方 Web UI（React SPA），由后端在 `127.0.0.1:3080` 提供
+- **前端**：dsh 官方 Web UI（React SPA），由后端在 `127.0.0.1:3080`（dev 模式 30080）提供
 - **生命周期**：Rust 侧负责启动后端、轮询端口就绪后导航 WebView、退出时清理整个 sidecar 进程树（`taskkill /T` + Windows Job Object 兜底，任务管理器强杀也不会残留 node 进程）
 
 ## 环境要求
@@ -75,7 +75,9 @@ npm run build
 
 - **性能**：`npm run dev` 为 debug 构建，执行任务时界面可能卡顿；使用 `npm run build` 的 release 产物可获得正常性能。
 - **首屏白屏**：进入页面瞬间的短暂空白是 React SPA 首帧渲染的固有间隙，窗口背景色已与页面主题对齐，视觉上基本无缝。
-- **端口**：后端固定占用 `127.0.0.1:3080`，启动前请确保该端口空闲。
+- **端口**：release 构建占用 `127.0.0.1:3080`，dev 模式（`npm run dev`）占用 `127.0.0.1:30080`，启动前请确保对应端口空闲。
+- **开发模式隔离**：`npm run dev`（debug 构建）使用独立的 `DSH_HOME`（`%APPDATA%\ai.deepseek.dsh-desktop\dsh-dev`）和端口 30080，不读取安装版的用户配置（`cordis.patch.yml`、profiles、agent presets、插件、凭据），可与安装版同时运行。
+- **不弹浏览器**：UI 在 WebView 内嵌显示，sidecar 以 `--no-open` 启动，不会自动打开默认浏览器。
 - **版本**：DeepSeek Harness 处于 developer preview 阶段（当前打包 `@deepseek-ai/dsh@0.1.0-rc.6`），API 可能有破坏性变更，升级需重新验证。
 
 ## License
