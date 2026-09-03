@@ -229,6 +229,11 @@
     }
     hideMenu();
   }
+  function doOpenConsole() {
+    var invoke = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke;
+    if (invoke) invoke('open_devtools').catch(function (err) { reportError(err); });
+    hideMenu();
+  }
 
   /* ---------- menu DOM ---------- */
   var menu, style;
@@ -268,6 +273,7 @@
       selectall: '<rect x="2.5" y="3.5" width="11" height="9" rx="1.5"/><path d="M5 6.5h6M5 9.5h6"/>',
       reload: '<path d="M13.8 8a5.8 5.8 0 1 1-1.7-4.1"/><path d="M13.8 1.8V4.9h-3.1"/>',
       openlink: '<path d="M10 2.5h3.5V6"/><path d="m13.5 2.5-6 6"/><path d="M8.5 5.5h-3a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h5a2 2 0 0 0 2-2v-3"/>',
+      console: '<path d="M3.5 4.5 7 8 3.5 11.5"/><path d="M9.5 11.5H13"/>',
     };
     return '<span class="dsh-ctx-icon"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths[name] + '</svg></span>';
   }
@@ -291,6 +297,9 @@
     { id: 'reload', label: '刷新', icon: 'reload',
       enabled: function () { return true; },
       run: doReload },
+    { id: 'console', label: '打开控制台', icon: 'console',
+      enabled: function () { return true; },
+      run: doOpenConsole },
   ];
 
   /* 打开外链 sits on top only when the right-click landed on an external link. */

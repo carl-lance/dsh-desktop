@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "remote-ipc",
-  "description": "Remote-origin IPC (localhost only) for injected shell features: the quit-confirmation dialog and the external-links handler. The dsh web UI is served over http://127.0.0.1:PORT, so its origin is remote to Tauri; without this capability the injected scripts could not reach the quit_app / open_url commands.",
+  "description": "Remote-origin IPC (localhost only) for injected shell features: the quit-confirmation dialog, external-links handler and context-menu actions (open_url / open_devtools / quit_app). The dsh web UI is served over http://127.0.0.1:PORT, so its origin is remote to Tauri; without this capability the injected scripts could not reach the shell commands.",
   "windows": ["main"],
   "local": false,
   "remote": {
@@ -12,5 +12,5 @@
       "http://localhost:3080"
     ]
   },
-  "permissions": ["allow-quit-app", "allow-open-url"]
+  "permissions": ["allow-quit-app", "allow-open-url", "allow-open-devtools"]
 }

@@ -1,0 +1,9 @@
+# Application permission for the `open_devtools` command.
+#
+# Called via `window.__TAURI_INTERNALS__.invoke('open_devtools')` by the
+# injected context-menu item "打开控制台" to open the WebView2 DevTools.
+# Referenced from capabilities as "allow-open-devtools".
+[[permission]]
+identifier = "allow-open-devtools"
+description = "Allows opening the WebView2 DevTools console (open_devtools command)."
+commands.allow = ["open_devtools"]

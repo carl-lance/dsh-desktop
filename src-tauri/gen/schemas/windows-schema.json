@@ -177,6 +177,12 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Allows opening the WebView2 DevTools console (open_devtools command).",
+          "type": "string",
+          "const": "allow-open-devtools",
+          "markdownDescription": "Allows opening the WebView2 DevTools console (open_devtools command)."
+        },
+        {
           "description": "Allows opening a URL in the system default browser (open_url command).",
           "type": "string",
           "const": "allow-open-url",

@@ -120,11 +120,14 @@ fn start_dsh(app: &tauri::App) -> Result<Child, Box<dyn std::error::Error>> {
         }
     }
 
-    // Isolate dsh user data under the app config dir. Dev builds (debug) use a
-    // separate home (`dsh-dev`) so they never read the installed app's config:
-    // cordis.patch.yml overrides, profiles, agent presets, plugins, credentials.
+    // Isolate dsh user data. Release builds keep user data in %APPDATA%;
+    // dev builds (debug) use a dev-only home inside the build tree
+    // (`<crate>/target/dsh-dev`) so dev sessions/credentials stay gitignored
+    // and are wiped together with `cargo clean`.
     let dsh_home = if cfg!(debug_assertions) {
-        app.path().app_config_dir()?.join("dsh-dev")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("dsh-dev")
     } else {
         app.path().app_config_dir()?.join("dsh")
     };
@@ -176,6 +179,15 @@ fn quit_app(app: tauri::AppHandle) {
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
     open::that(&url).map_err(|e| e.to_string())
+}
+
+/// Open the WebView2 DevTools console (right-click menu "打开控制台").
+/// Devtools are enabled in debug builds; on release this is a no-op.
+#[tauri::command]
+fn open_devtools(app: tauri::AppHandle) {
+    if let Some(webview) = app.get_webview_window("main") {
+        webview.open_devtools();
+    }
 }
 
 /// JS injected into the webview when a close is requested. It renders a quit
@@ -237,7 +249,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![quit_app, open_url])
+        .invoke_handler(tauri::generate_handler![quit_app, open_url, open_devtools])
         .on_window_event(|window, event| {
             // Intercept window close: show the injected dsh-styled confirmation
             // dialog instead of quitting immediately.
