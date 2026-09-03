@@ -47,7 +47,62 @@ const dshExternalsPlugin = {
   }
 };
 
+/** Monaco's ESM files import raw `.css` for side effects (widget styling).
+ *  Instead of relying on each module injecting at runtime (which proved
+ *  unreliable in the webview), every css file is collected at BUILD time and
+ *  the aggregated stylesheet is injected once with the bundle (see
+ *  buildClient). Fonts referenced by url() are base64-inlined so the bundle
+ *  stays self-contained. */
+const monacoCssParts = [];
+
+function mimeFor(file) {
+  const ext = file.slice(file.lastIndexOf(".")).toLowerCase();
+  const map = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
+    ".ttf": "font/ttf", ".otf": "font/otf", ".woff": "font/woff",
+    ".woff2": "font/woff2", ".eot": "application/vnd.ms-fontobject",
+  };
+  return map[ext] || "application/octet-stream";
+}
+
+async function inlineCssAssets(cssPath, text) {
+  const { dirname } = await import("node:path");
+  const { readFileSync } = await import("node:fs");
+  return text.replace(/url\((['"]?)([^'")]+)\1\)/g, (match, quote, ref) => {
+    const clean = ref.trim();
+    if (/^(data:|#|https?:|\/)/.test(clean)) return match;
+    const abs = join(dirname(cssPath), clean);
+    try {
+      const buf = readFileSync(abs);
+      return `url("data:${mimeFor(abs)};base64,${buf.toString("base64")}")`;
+    } catch {
+      return match;
+    }
+  });
+}
+
+const monacoCssPlugin = {
+  name: "monaco-css",
+  setup(build) {
+    build.onResolve({ filter: /\.css$/ }, (args) => ({
+      path: args.path.startsWith(".") ? join(args.resolveDir, args.path) : args.path,
+      namespace: "monaco-css",
+      sideEffects: true
+    }));
+    build.onLoad({ filter: /.*/, namespace: "monaco-css" }, async (args) => {
+      let text = await readFile(args.path, "utf8");
+      text = await inlineCssAssets(args.path, text);
+      monacoCssParts.push(text);
+      // The real injection happens once in the wrapper; modules only need to
+      // exist so esbuild keeps the css files in the graph.
+      return { contents: "export {};", loader: "js" };
+    });
+  }
+};
+
 async function buildClient() {
+  monacoCssParts.length = 0;
   const result = await build({
     entryPoints: [join(root, "src/client/index.tsx")],
     bundle: true,
@@ -56,13 +111,19 @@ async function buildClient() {
     target: ["es2020"],
     jsx: "automatic",
     external: CLIENT_EXTERNALS,
-    plugins: [dshExternalsPlugin],
+    plugins: [dshExternalsPlugin, monacoCssPlugin],
     minify: false,
     write: false,
     logLevel: "silent",
   });
   const body = result.outputFiles[0].text;
-  const wrapper = `window.__ModuleLoader__.load({
+  const cssInject =
+    monacoCssParts.length > 0
+      ? "(function(){try{var d=document;var h=d.head||d.documentElement;var s=d.createElement('style');s.setAttribute('data-mc-all','1');s.textContent=" +
+        JSON.stringify(monacoCssParts.join("\n")) +
+        ";h.appendChild(s);}catch(e){}})();\n"
+      : "";
+  const wrapper = `${cssInject}window.__ModuleLoader__.load({
 \tid: ${JSON.stringify(PLUGIN_ID)},
 \tfactory: (require) => {
 \t\tvar module = { exports: {} };

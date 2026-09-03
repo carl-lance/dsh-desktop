@@ -202,7 +202,20 @@ const QUIT_CONFIRM_SCRIPT: &str = include_str!("../assets/quit-confirm.js");
 /// Lives in `assets/context-menu.js`; the webview is created with
 /// `enable_clipboard_access()` so the script can read/write the clipboard from
 /// plain JS (`navigator.clipboard`) — no Rust bridge command is needed.
-const CONTEXT_MENU_SCRIPT: &str = include_str!("../assets/context-menu.js");
+///
+/// A dev-mode flag is prepended so the injected script can gate dev-only
+/// actions: the "打开控制台" DevTools item is rendered only in debug builds
+/// (`window.__dshDevMode === true`), mirroring DevTools availability.
+#[cfg(debug_assertions)]
+const CONTEXT_MENU_SCRIPT: &str = concat!(
+    "window.__dshDevMode = true;\n",
+    include_str!("../assets/context-menu.js")
+);
+#[cfg(not(debug_assertions))]
+const CONTEXT_MENU_SCRIPT: &str = concat!(
+    "window.__dshDevMode = false;\n",
+    include_str!("../assets/context-menu.js")
+);
 
 /// External-link script injected as a WebView2 initialization script: routes
 /// left-clicks on non-local links to the system default browser via the

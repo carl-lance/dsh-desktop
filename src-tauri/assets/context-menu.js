@@ -13,7 +13,10 @@
  * fallback.
  *
  * Menu items are always visible and gray out (disabled, opacity .4) when not
- * applicable. Items: 剪切 / 复制 / 粘贴 / 全选 │ 刷新.
+ * applicable. Items: 剪切 / 复制 / 粘贴 / 全选 │ 刷新 │ 打开控制台; the
+ * dev-only 打开控制台 item is hidden unless `window.__dshDevMode` is true
+ * (debug builds only — see the flag prepended in CONTEXT_MENU_SCRIPT), and
+ * right-clicking an external link adds 打开外链 on top.
  *
  * State is fully snapshotted at right-click time; the target element is held
  * by direct reference (`state.target`, no DOM marker) so menu rendering can
@@ -298,13 +301,18 @@
       enabled: function () { return true; },
       run: doReload },
     { id: 'console', label: '打开控制台', icon: 'console',
+      devOnly: true, // hidden in release builds (window.__dshDevMode !== true)
       enabled: function () { return true; },
       run: doOpenConsole },
   ];
 
   /* 打开外链 sits on top only when the right-click landed on an external link. */
   function buildItems() {
-    if (!state.externalLink) return ITEMS;
+    var items = ITEMS.filter(function (item) {
+      // Dev-only items (打开控制台) appear only in debug builds.
+      return !(item.devOnly && window.__dshDevMode !== true);
+    });
+    if (!state.externalLink) return items;
     return [
       { id: 'openlink', label: '打开外链', icon: 'openlink',
         enabled: function () { return true; },

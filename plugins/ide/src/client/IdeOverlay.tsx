@@ -8,11 +8,17 @@
  * resize live (ResizeObserver on the frame's grid columns).
  *
  * The overlay layer is click-through by default; this entry opts back into
- * pointer events via `pointerEvents: "auto"` on its root.
+ * pointer events via `pointerEvents: "auto"` on its root. The chrome bar
+ * shows the resolved workspace title; the body is the workbench.
  */
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ideStore } from "./ideStore";
+import { useIdeDoc, onIdeBus } from "./ideApi";
+import { Workbench } from "./Workbench";
+import { GitBranchMenu } from "./GitBranchMenu";
+import { CommitDialog } from "./CommitDialog";
+import { PushDialog } from "./PushDialog";
 
 export interface IdeOverlayProps {
   [key: string]: unknown;
@@ -26,7 +32,21 @@ const CLOSE_ICON = (
 
 export function IdeOverlay(_props: IdeOverlayProps): JSX.Element | null {
   const isOpen = useSyncExternalStore(ideStore.subscribe, ideStore.isOpen);
+  const doc = useIdeDoc();
   const [left, setLeft] = useState(0);
+  const rootInnerRef = useRef<HTMLDivElement | null>(null);
+  const [note, setNote] = useState("");
+  const [commitOpen, setCommitOpen] = useState(false);
+  const [pushOpen, setPushOpen] = useState(false);
+
+  useEffect(() => onIdeBus("open-commit", () => setCommitOpen(true)), []);
+  useEffect(() => onIdeBus("open-push", () => setPushOpen(true)), []);
+
+  useEffect(() => {
+    if (!note) return;
+    const t = setTimeout(() => setNote(""), 2600);
+    return () => clearTimeout(t);
+  }, [note]);
 
   // Escape closes the panel.
   useEffect(() => {
@@ -48,9 +68,6 @@ export function IdeOverlay(_props: IdeOverlayProps): JSX.Element | null {
     let raf = 0;
     const tick = (): void => {
       if (frame) {
-        // Frame children order is sidebar, center, details (layout code is
-        // stable in the pinned runtime); the center column's offsetLeft is
-        // the sidebar's live width (expanded or compact rail).
         const center = frame.children[1] as HTMLElement | undefined;
         const anchor = (center || frame.firstElementChild) as HTMLElement | undefined;
         const next = anchor ? anchor.offsetLeft || 0 : 0;
@@ -62,10 +79,17 @@ export function IdeOverlay(_props: IdeOverlayProps): JSX.Element | null {
     return () => cancelAnimationFrame(raf);
   }, [isOpen]);
 
-  if (!isOpen) return null;
+  // When hidden, release focus so keystrokes don't land in the hidden editor.
+  useEffect(() => {
+    if (isOpen) return;
+    const el = document.activeElement as HTMLElement | null;
+    if (el && rootInnerRef.current && rootInnerRef.current.contains(el)) el.blur();
+  }, [isOpen]);
 
   return (
     <div
+      ref={rootInnerRef}
+      data-ide-overlay="1"
       style={{
         position: "absolute",
         top: 0,
@@ -73,12 +97,13 @@ export function IdeOverlay(_props: IdeOverlayProps): JSX.Element | null {
         right: 0,
         left,
         zIndex: 10,
-        pointerEvents: "auto",
-        display: "flex",
+        // Hidden (not unmounted) when closed so the workbench keeps all
+        // state; display:none guarantees nothing paints or intercepts.
+        display: isOpen ? "flex" : "none",
         flexDirection: "column",
         background: "var(--dsw-alias-bg-base, #fff)",
         color: "var(--dsw-alias-label-primary, #0f1115)",
-        fontFamily: 'var(--ds-font-family-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif)',
+        fontFamily: 'var(--ds-font-family-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif)',
       }}
     >
       {/* IDE chrome bar */}
@@ -86,14 +111,29 @@ export function IdeOverlay(_props: IdeOverlayProps): JSX.Element | null {
         style={{
           display: "flex",
           alignItems: "center",
-          justifyContent: "space-between",
           gap: 8,
           padding: "10px 14px",
           borderBottom: "1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.06))",
           flex: "none",
         }}
       >
-        <span style={{ fontSize: 13, fontWeight: 600, letterSpacing: ".02em" }}>IDE</span>
+        <span style={{ fontSize: 13, fontWeight: 600, letterSpacing: ".02em", whiteSpace: "nowrap" }}>
+          {doc.title ? `IDE · ${doc.title}` : "IDE"}
+        </span>
+        <span
+          style={{
+            fontSize: 11,
+            color: "var(--dsw-alias-label-tertiary, #81858c)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+          title={doc.cwd}
+        >
+          {doc.cwd}
+        </span>
+        <div style={{ flex: 1 }} />
+        <GitBranchMenu onNotify={setNote} />
         <button
           type="button"
           title="关闭"
@@ -110,31 +150,46 @@ export function IdeOverlay(_props: IdeOverlayProps): JSX.Element | null {
             cursor: "pointer",
             color: "var(--dsw-alias-label-secondary, #61666b)",
             background: "transparent",
+            flex: "none",
           }}
         >
           {CLOSE_ICON}
         </button>
       </div>
 
-      {/* IDE surface (Phase 0 placeholder) */}
-      <div
-        style={{
-          flex: 1,
-          minHeight: 0,
-          overflow: "auto",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-        }}
-      >
-        <div style={{ maxWidth: 560, padding: 24, display: "flex", flexDirection: "column", gap: 8 }}>
-          <div style={{ fontSize: 16, fontWeight: 600 }}>IDE</div>
-          <div style={{ fontSize: 13, lineHeight: 20, color: "var(--dsw-alias-label-secondary, #61666b)" }}>
-            Phase 0 浮层壳已就位：紧贴侧栏、随侧栏宽度自动伸缩；侧栏功能保留。
-            Git、文件浏览 + Monaco、工作区终端按开发计划分阶段填充。
-          </div>
-        </div>
+      {/* IDE workbench */}
+      <div style={{ flex: 1, minHeight: 0 }}>
+        <Workbench />
       </div>
+
+      {/* transient toast (kept off the chrome bar so it never shifts layout) */}
+      {note && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 14,
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 400,
+            padding: "6px 12px",
+            borderRadius: 8,
+            fontSize: 12,
+            whiteSpace: "nowrap",
+            background: "var(--dsw-specific-info-bg, rgba(30,110,220,.1))",
+            color: "var(--dsw-alias-label-primary, #0f1115)",
+            boxShadow: "0 4px 16px rgba(0,0,0,.12)",
+            pointerEvents: "none",
+          }}
+        >
+          {note}
+        </div>
+      )}
+
+      {/* commit dialog (branch menu → 提交) */}
+      {commitOpen && <CommitDialog onClose={() => setCommitOpen(false)} onNotify={setNote} />}
+
+      {/* push dialog (branch menu → 推送) */}
+      {pushOpen && <PushDialog onClose={() => setPushOpen(false)} onNotify={setNote} />}
     </div>
   );
 }

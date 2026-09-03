@@ -1,18 +1,18 @@
 /**
  * dsh-ide — session header action: toggles the fullscreen IDE overlay.
  *
- * Registered into `conversation.session.header.actions` (list slot). The
- * entry component IS the button, like the official job-list action.
+ * Registered into `conversation.session.header.utilities`. On open it binds
+ * the session the button belongs to (props.sessionId) and asks the host to
+ * resolve the workspace root before the workbench mounts.
  */
 
-import { useSyncExternalStore } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import { ideStore } from "./ideStore";
+import { openForSession, call } from "./ideApi";
 
 export interface IdeHeaderActionProps {
   /** Framework session kit (injected by the slot owner). */
   sessionId?: string;
-  /** Bound locale function for this entry's namespace. */
-  t?: (key: string) => string;
   [key: string]: unknown;
 }
 
@@ -25,15 +25,40 @@ const IDE_ICON = (
   </svg>
 );
 
-export function IdeHeaderAction(_props: IdeHeaderActionProps): JSX.Element {
+export function IdeHeaderAction(props: IdeHeaderActionProps): JSX.Element {
   const isOpen = useSyncExternalStore(ideStore.subscribe, ideStore.isOpen);
+  const sessionId = typeof props.sessionId === "string" ? props.sessionId : "";
+  const prevSession = useRef<string | null>(null);
+
+  // Probe: does the slot owner re-render us with a new sessionId when the
+  // host switches conversation/workspace?
+  useEffect(() => {
+    const prev = prevSession.current;
+    prevSession.current = sessionId;
+    if (prev === null && sessionId === "") return;
+    if (prev !== sessionId) {
+      void call("session.diag", {
+        at: Date.now(),
+        prevSession: prev,
+        sessionId,
+        overlayOpen: ideStore.isOpen(),
+      }).catch(() => undefined);
+    }
+  }, [sessionId]);
+
   return (
     <button
       type="button"
       title="IDE"
       aria-label="IDE"
       aria-pressed={isOpen}
-      onClick={() => ideStore.toggle()}
+      data-ide-header-session={sessionId}
+      onClick={() => {
+        if (!ideStore.isOpen()) {
+          void openForSession(typeof props.sessionId === "string" ? props.sessionId : "");
+        }
+        ideStore.toggle();
+      }}
       style={{
         display: "inline-flex",
         alignItems: "center",

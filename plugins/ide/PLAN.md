@@ -1,65 +1,48 @@
-# dsh-ide 开发计划
+# dsh-ide 开发规划（PLAN）
 
-> 目标：DeepSeek Harness Web 的 **IDE 插件**——中栏 `conversation.view` 视图环的第三个页签（与"对话/轨迹"并列切换）。
-> 覆盖：Git 版本管理（提交/推送/SSH 密钥/可配置 git.exe）、文件浏览 + Monaco 预览、仅工作区范围的终端。
-> 本文件是路线图；每个 Phase 完成即勾选，未决点以 ⚠️ 标注并在对应 Phase 的 spike 中关闭。
+> 架子已定：**头部按钮 + shell.overlay 常驻浮层（关闭=隐藏保活）**；不做 conversation.view 页签。
+> 功能规划/取舍与逐步实现日志分别见 `DESIGN.md`、`DEVLOG.md`。本文 = 里程碑与待办（勾选随完成更新）。
 
-## 架构基线（已确认）
+## 里程碑状态
 
-- **挂载点**：`conversation.view`（kind: list / scope: session）——已代码级验证与 trajectory 注册形态一致
-- **形态**：客户端插件注册视图标签（React，页签名 **IDE**，id `ide`），宿主侧 Node 承载 git/fs/pty 能力
-- **版本**：dsh **0.1.1-rc.2**（npm latest，本项目内置）。⚠️ 0.1.2-rc.1 存在破坏性重构（`dsh-client-runtime` 删除、conversation 拆包），升级前需整体评估
-- **开发/验证环境**：dev 模式 home = `<crate>/target/dsh-dev`（已改），插件装入该 profile 验证
+### ✅ 已落地
+- 工作台布局：左多标签（编辑器/diff/终端）+ 右侧文件/Git 面板 + 最右图标栏（面板收起走图标）
+- Monaco 编辑器（91 语言上色、行号、小地图、折叠、查找、Ctrl+S、脏点、截断只读、光标保持、外部文件自动重载不脏）
+- 文件管理：树/右键菜单/新建/重命名/删除/加入VCS/拖放移动（二次确认）/git 状态着色（?A M !!）
+- 监听：fs.watch 递归→文件树+git+干净编辑器自动同步；git 5s 轮询
+- 状态：按工作区缓存（localStorage）+ 关闭隐藏保活 + 宿主切换跟随（DOM 轮询 sessionId）
+- Git UI：分支下拉（非 git 显示 加入VCS 管理→先弹窗后 init）；Git 面板=提交记录树
+- 弹窗（dsh 风格）：提交（文件树勾选+说明）、推送（左提交右文件树+信息）、加入VCS（分支名/.gitignore/加入-忽略）
 
----
+### ⏳ 后端接线（UI 已就位，动作待真实 git）
+- [ ] 提交：add 选中（含新文件）→ `commit -F`（临时文件传 message）→ 更新 git 状态
+- [ ] 提交并推送：上述 + push
+- [ ] 推送：当前分支 `git push`（含远端不存在分支时 -u 提示）
+- [ ] 更新：`git pull`（含冲突/快进结果提示）
+- [ ] 检出：分支列表选择 → checkout（远端分支自动建本地跟踪）
+- [ ] 分支 对比：对比基线选择 → 左侧打开 diff 标签（可复用 commit.diff / `git diff` 数据）
+- [ ] 分支 重命名 / 删除（本地 -d/-D；远端 -d push origin :name；保护当前分支）
 
-## Phase 0 — 基础插件包（本次交付，骨架）
+### ⏳ 终端（调研完成，见 DEVLOG §Terminal）
+- [ ] host `terminalServer.ts`：loopback http + ws + node-pty 会话（shell 探测 pwsh/powershell，cwd 锁工作区根）
+- [ ] 客户端 `TerminalPane`：@xterm/xterm + FitAddon（新依赖装进插件），WS 直连、fit/重连
+- [ ] 标签关闭确认：运行中进程 → 弹窗（终止/取消）
+- [ ] 会话生命周期：切工作区/关闭应用时的清理策略
+- [ ] 多会话/重命名（二期）
 
-- [x] `plugins/ide/` 目录 + package.json（`dsh.client` manifest，name `dsh-ide`）+ build.mjs（esbuild，源自模板）+ tsconfig
-- [x] 客户端：注册 `conversation.view` 页签（id `ide`，order 20，标签"IDE"）+ 占位视图 + locales（zh/en）
-- [x] 宿主侧最小入口（name/inject/apply，暂无逻辑）
-- [ ] **验证步骤（需在用户环境执行）**：
-  1. `npm install --legacy-peer-deps`（只装 esbuild）
-  2. `npm run build` → `lib/index.js` + `lib/client.js`
-  3. 装入 dev profile：复制到 `<repo>\src-tauri\target\dsh-dev\profiles\node_modules\dsh-ide`，
-     并在 `...\profiles\web\cordis.patch.yml` 追加 `- insert: - id: dsh-ide`（幂等）
-  4. 重启 sidecar → 进入会话 → 头部视图环应出现第三个标签"IDE"
+### ⏳ 打磨与性能
+- [ ] bundle 体积：Monaco+全部语言 ~7.5MB(未压缩) → minify + 语言按需（分块/动态 import）+ 移除无用（gitgraph 若弃用）
+- [ ] git.all 频繁轮询优化（dirty 节流/后台降频）
+- [ ] 错误可见性：把 host/client 关键错误统一 toast + host 日志
+- [ ] 深色主题适配（monaco 主题随 dsh 主题切换）
+- [ ] 移除/收尾诊断探针代码与 diag 文件机制（或保留开关）
+- [ ] 单元/冒烟：ChangeTree、路径 jail、语言探测、porcelain 解析
 
-## Phase 1 — 契约 spike（必须最先做，决定后续数据面）
+## 架构备忘（不再讨论项）
+- 通信仅 settings 命名空间；client 请求串行化；host 串行队列
+- fs/git 一律 realpath jail；git 走 `-C` + args（禁 shell）
+- Monaco 打包式（monacoHost 接缝为迁托管式预留）；CSS 构建期聚合注入；worker 用空 stub
+- 每个 workspace 有 localStorage 缓存；面板隐藏不卸载；宿主会话跟随用 DOM 轮询（无公开事件）
 
-- [ ] ⚠️ 确认 `conversation.view` 外部条目接收的 props/inject（sessionId 等）与渲染生命周期（切会话/收起时是否卸载）
-- [ ] ⚠️ 确认宿主侧能力边界：插件 host 能否裸 `child_process`、能否 `require('node-pty')`（profiles 链接集是否含它——dsh-subprocess-local 依赖它，大概率在）、能否读工作区根路径
-- [ ] 决定 Git/FS 数据面：host 服务直连（ctx 服务 + 命名空间投影）vs 插件自有 127.0.0.1 微服务器（流式/大文件）——倾向：常规操作走 host 服务；终端/大 diff 走微服务器
-- [ ] 工作区根解析：会话 `cwd`（session.header.cwd）为 git/终端默认目录
-
-## Phase 2 — Git 核心（host 侧）
-
-- [ ] 设置：git.exe 路径（自动探测 + 手动指定）、user.name/email、SSH 密钥导入（粘贴/拖文件/浏览 → `~/.ssh` + 权限 600）
-- [ ] 状态：status / 变更列表（M/A/D）+ diff（工作区 vs HEAD / 暂存 vs 工作区）
-- [ ] 操作：stage/unstage、commit（提交信息 UI）、pull/push、分支切换、log 历史
-- [ ] 客户端视图：变更列表 + 提交面板（复用 dsh 令牌样式）
-
-## Phase 3 — 文件浏览 + Monaco 预览
-
-- [ ] 文件树：工作区根遍历（忽略 .git/node_modules/常见目录）
-- [ ] Monaco：⚠️ 体积与 worker——评估 内联进 client bundle vs 插件自有静态资产服务（monaco ~4MB + worker）
-- [ ] 只读预览默认，可切换读写 + 保存（写文件 → 刷新 git 徽标）
-
-## Phase 4 — 工作区终端
-
-- [ ] xterm.js（client）+ node-pty（host，cwd 锁工作区根）
-- [ ] ⚠️ 终端流通道：WebSocket（微服务器）优先；会话内布局（页签底部条 or IDE 内部区域）
-
-## Phase 5 — 打磨与入口
-
-- [ ] 附加入口：`sidebar.footer.action`（list 槽）或 `conversation.session.header.actions`（list 槽）注册快捷按钮
-- [ ] 主题/国际化随 dsh（`--dsw-alias-*` 令牌 + locale 已就位）
-- [ ] 与壳层注入功能共存验证（右键菜单/退出确认/外链——互不干扰）
-
----
-
-## 已否决/暂缓
-
-- 右栏 details：single 槽被官方占用 + 300-520px 太窄，不做宿主
-- `shell.overlay`：官方浮层槽（list，空置）——留作"快速操作浮层/拖拽安装反馈"等辅助面，主 IDE 按页签走
-- 0.1.2 升级：等正式版稳定 + 官方迁移范式后再评估
+## 长线候选（未排期）
+- 文件历史/与指定提交 diff；搜索；设置面板；主题图标优化；把提交/推送等弹窗逐步做成真正的向导式多步
