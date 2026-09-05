@@ -123,17 +123,36 @@ fn dsh_home_path(app: &tauri::App) -> Option<PathBuf> {
     }
 }
 
-/// Best-effort startup plugin installer (see resources/plugin-install.js).
-/// Never blocks booting: missing files or a failing install are logged and
-/// skipped so the desktop app always starts.
-fn install_plugins(app: &tauri::App) {
-    let Some(resource_dir) = find_resource_dir(app) else {
+/// Best-effort plugin installer, run AFTER the dsh backend is ready (profiles
+/// have been seeded by then, so patch files exist and writes stick). Never
+/// blocks booting: failures are logged and skipped.
+fn install_plugins_now(app: &tauri::AppHandle) {
+    let base = match app.path().resource_dir() {
+        Ok(b) => b,
+        Err(_) => {
+            eprintln!("dsh-desktop: plugin installer skipped (no resource dir)");
+            return;
+        }
+    };
+    let resource_dir = [base.clone(), base.join("resources")]
+        .into_iter()
+        .find(|d| d.join("node.exe").exists() && d.join("dsh-runtime").is_dir());
+    let Some(resource_dir) = resource_dir else {
         eprintln!("dsh-desktop: plugin installer skipped (resources not found)");
         return;
     };
-    let Some(home) = dsh_home_path(app) else {
-        eprintln!("dsh-desktop: plugin installer skipped (no dsh home)");
-        return;
+    let home = if cfg!(debug_assertions) {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("dsh-dev")
+    } else {
+        match app.path().app_config_dir() {
+            Ok(d) => d.join("dsh-beta"),
+            Err(_) => {
+                eprintln!("dsh-desktop: plugin installer skipped (no app config dir)");
+                return;
+            }
+        }
     };
     let node_exe = resource_dir.join("node.exe");
     let script = resource_dir.join("plugin-install.js");
@@ -214,6 +233,10 @@ fn navigate_when_ready(app: tauri::AppHandle) {
                 eprintln!("dsh-desktop: navigate failed: {error}");
             }
         }
+        // Let the backend finish first-boot seeding, then install/update
+        // bundled plugins (idempotent check on later starts).
+        thread::sleep(Duration::from_secs(10));
+        install_plugins_now(&app);
     });
 }
 
@@ -233,12 +256,17 @@ fn open_url(url: String) -> Result<(), String> {
 }
 
 /// Open the WebView2 DevTools console (right-click menu "打开控制台").
-/// Devtools are enabled in debug builds; on release this is a no-op.
+/// `open_devtools` only exists when devtools are compiled in (debug builds);
+/// on release this is a no-op.
 #[tauri::command]
 fn open_devtools(app: tauri::AppHandle) {
-    if let Some(webview) = app.get_webview_window("main") {
-        webview.open_devtools();
+    #[cfg(debug_assertions)]
+    {
+        if let Some(webview) = app.get_webview_window("main") {
+            webview.open_devtools();
+        }
     }
+    let _ = app;
 }
 
 /// JS injected into the webview when a close is requested. It renders a quit
@@ -301,9 +329,8 @@ pub fn run() {
             })
             .build()?;
 
-            // Install/update bundled plugins before the backend boots.
-            install_plugins(app);
-
+            // Plugin install now runs after the backend is ready
+            // (see install_plugins_now in navigate_when_ready).
             match start_dsh(app) {
                 Ok(child) => {
                     app.manage(SidecarState(Mutex::new(Some(child))));

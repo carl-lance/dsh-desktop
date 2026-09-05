@@ -74,7 +74,10 @@ function removeOldDirs(base, names, extra) {
 }
 
 /** cordis.patch.yml maintenance: exactly one `- insert:` entry for `id` in
- *  each profile, stale previous-name entries removed, unrelated entries kept. */
+ *  each profile, stale previous-name entries removed, unrelated entries kept.
+ *  If a profile dir exists (has cordis.yml) but lacks the patch file, create
+ *  it with the entry (dsh seeds profiles on first boot, after the installer
+ *  has already run). */
 function patchProfiles(dshHome, id, previousNames) {
   const profilesRoot = path.join(dshHome, "profiles");
   let profileDirs = [];
@@ -87,12 +90,33 @@ function patchProfiles(dshHome, id, previousNames) {
   const ID_RE = /^(\s*)- id:\s*(dsh-plugin-[a-z0-9][a-z0-9._-]*)\s*$/;
   const NM_RE = /^\s*name:\s*(dsh-plugin-[a-z0-9][a-z0-9._-]*)\s*$/;
   const MARKER_RE = /^\s*- insert:\s*$/;
+  // A fresh profile's patch may be an empty YAML flow list (`[]`). Appending
+  // blocks after it makes the file invalid, so drop it whenever present.
+  const EMPTY_LIST_RE = /^\s*\[\s*\]\s*$/;
+  const HEADER =
+    "# Your patch layer for this dsh profile, applied after every bundle layer:\n" +
+    "# a top-level YAML array of loader patch entries (id-targeted config\n" +
+    "# overrides, disables, and insert lists; `!!js` expressions allowed).\n";
   const NEW_BLOCK = `- insert:\n    - id: ${id}\n      name: ${id}\n`;
+  let touched = 0;
 
   for (const e of profileDirs) {
     if (!e.isDirectory() || e.name === "node_modules") continue;
-    const patchFile = path.join(profilesRoot, e.name, "cordis.patch.yml");
-    if (!fs.existsSync(patchFile)) continue;
+    const dir = path.join(profilesRoot, e.name);
+    const patchFile = path.join(dir, "cordis.patch.yml");
+    const isProfile = fs.existsSync(path.join(dir, "cordis.yml")) || fs.existsSync(patchFile);
+    if (!isProfile) continue;
+    if (!fs.existsSync(patchFile)) {
+      try {
+        fs.writeFileSync(patchFile, HEADER + NEW_BLOCK, "utf8");
+        touched++;
+        log("ok", `created ${patchFile}`);
+      } catch (err) {
+        log("warn", `create ${patchFile} failed: ${err.message}`);
+      }
+      continue;
+    }
+    touched++;
     try {
       const raw = fs.readFileSync(patchFile, "utf8").split(/\r?\n/);
       const out = [];
@@ -103,7 +127,11 @@ function patchProfiles(dshHome, id, previousNames) {
         if (!MARKER_RE.test(line)) {
           // Plain (non-block) line: drop orphan id/name lines that belong to
           // us (stale names, or current id without a marker — it is re-added
-          // canonically below when missing).
+          // canonically below when missing), plus empty `[]` defaults.
+          if (EMPTY_LIST_RE.test(line)) {
+            i++;
+            continue;
+          }
           const pidm = ID_RE.exec(line);
           const pnmm = NM_RE.exec(line);
           if (pidm) {
@@ -190,6 +218,24 @@ function patchProfiles(dshHome, id, previousNames) {
       fs.writeFileSync(patchFile, final, "utf8");
     } catch (err) {
       log("warn", `patch ${patchFile} failed: ${err.message}`);
+    }
+  }
+
+  // Pure first run: no profile exists yet (dsh seeds profiles on first boot,
+  // which happens after this installer). Pre-create the web profile patch so
+  // the plugin registers immediately; if the dsh seed overwrites the file,
+  // the next start's installer re-adds it.
+  if (touched === 0) {
+    const webDir = path.join(profilesRoot, "web");
+    try {
+      fs.mkdirSync(webDir, { recursive: true });
+      const patchFile = path.join(webDir, "cordis.patch.yml");
+      if (!fs.existsSync(patchFile)) {
+        fs.writeFileSync(patchFile, HEADER + NEW_BLOCK, "utf8");
+        log("ok", `pre-seeded ${patchFile} (may be re-seeded by dsh on first boot)`);
+      }
+    } catch (err) {
+      log("warn", `pre-seed profiles/web failed: ${err.message}`);
     }
   }
 }
