@@ -108,9 +108,7 @@ fn find_resource_dir(app: &tauri::App) -> Option<PathBuf> {
 }
 
 /// DSH user-data home: debug builds use the dev-only tree under
-/// `<crate>/target/dsh-dev`; release builds use `%APPDATA%/.../dsh-beta` so
-/// this beta build never shares profiles/credentials with the stable `dsh`
-/// install.
+/// `<crate>/target/dsh-dev`; release builds use `%APPDATA%/.../dsh`.
 fn dsh_home_path(app: &tauri::App) -> Option<PathBuf> {
     if cfg!(debug_assertions) {
         Some(
@@ -119,7 +117,7 @@ fn dsh_home_path(app: &tauri::App) -> Option<PathBuf> {
                 .join("dsh-dev"),
         )
     } else {
-        app.path().app_config_dir().ok().map(|d| d.join("dsh-beta"))
+        app.path().app_config_dir().ok().map(|d| d.join("dsh"))
     }
 }
 
@@ -147,7 +145,7 @@ fn install_plugins_now(app: &tauri::AppHandle) {
             .join("dsh-dev")
     } else {
         match app.path().app_config_dir() {
-            Ok(d) => d.join("dsh-beta"),
+            Ok(d) => d.join("dsh"),
             Err(_) => {
                 eprintln!("dsh-desktop: plugin installer skipped (no app config dir)");
                 return;
@@ -256,8 +254,8 @@ fn open_url(url: String) -> Result<(), String> {
 }
 
 /// Open the WebView2 DevTools console (right-click menu "打开控制台").
-/// `open_devtools` only exists when devtools are compiled in (debug builds);
-/// on release this is a no-op.
+/// Same behavior as the original implementation in debug builds; on release
+/// (no devtools) the call is compiled out so the crate still builds.
 #[tauri::command]
 fn open_devtools(app: tauri::AppHandle) {
     #[cfg(debug_assertions)]
