@@ -15,7 +15,7 @@ export function maskStyle(zIndex: number): CSSProperties {
     alignItems: "center",
     justifyContent: "center",
     background: "var(--dsw-alias-bg-mask-2, rgba(0,0,0,.16))",
-    backdropFilter: "blur(10px) saturate(1.25)",
-    WebkitBackdropFilter: "blur(10px) saturate(1.25)",
+    backdropFilter: "var(--dsw-mask-blur, blur(2px))",
+    WebkitBackdropFilter: "var(--dsw-mask-blur, blur(2px))",
   };
 }

@@ -3,6 +3,14 @@
 > 实时记录 dsh-ide 插件的实现进度、踩坑与决策。规划见 `PLAN.md`；
 > 终端实现方案调研见文末 §Terminal。更新日志请追加到顶部。
 
+## 最近更新（四）：收尾清理与文档同步（初版已提交 77b4045）
+- 清理 host 死代码（无任何 client 调用，零行为变化）：
+  - `git.pending`（已被 `git.pendingBranches` 取代）、`git.compare`（被 `git.compareDetail` 取代）、`git.checkoutHash`（从未做 UI）三个 dispatch case；
+  - `git.ts` 对应函数 `gitPendingCommits / gitCompare / gitCheckoutHash` 与 index.ts 导入一并删除，grep 确认无残留引用。
+- 已重新打包并安装 dev profile（host lib 53.6kB）。
+- 文档同步：`PLAN.md` 重写为当前里程碑（核心功能均已完成），剩余“打磨/增强”仅记录不排期。
+- 打磨后备清单（记录，暂不做）：历史轮询节流、推送失败重试按钮、深色主题与毛玻璃参数适配、超多分支历史性能/截断、bundle minify/语言按需、git.all 轮询降频、错误统一 toast+host 日志、diag 机制收尾（保留开关）、单测冒烟。
+
 ## 最近更新（三）：分隔条交互重构 / 构建卡死排查（磁盘满）
 
 ### 分隔条交互（Workbench.tsx）

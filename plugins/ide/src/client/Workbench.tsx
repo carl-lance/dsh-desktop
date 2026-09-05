@@ -1175,7 +1175,7 @@ function DialogShell({ onCancel, children }: { onCancel: () => void; children: R
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onCancel();
       }}
-      style={maskStyle(100)}
+      style={maskStyle(230)}
     >
       <div
         style={{

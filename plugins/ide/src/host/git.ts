@@ -285,31 +285,6 @@ function parsePending(out: string): PendingCommit[] {
   return commits;
 }
 
-/** Commits ahead of the remote (for the current branch). */
-export async function gitPendingCommits(root: string): Promise<{ commits: PendingCommit[]; range: string; root: string }> {
-  let range = "@{upstream}..HEAD";
-  try {
-    await git(root, ["rev-parse", "--verify", "@{upstream}"], 8000);
-  } catch {
-    range = "--not";
-  }
-  const args = range === "--not"
-    ? ["log", "HEAD", "--not", "--remotes", "--format=%H%x1f%an%x1f%at%x1f%s"]
-    : ["log", range, "--format=%H%x1f%an%x1f%at%x1f%s"];
-  const commits: PendingCommit[] = [];
-  try {
-    const out = await git(root, args);
-    for (const line of out.split("\n")) {
-      if (!line) continue;
-      const [hash, author, tsRaw, subject] = line.split("\x1f");
-      commits.push({ hash, short: hash.slice(0, 7), author, ts: Number(tsRaw) || 0, subject: subject ?? "" });
-    }
-  } catch {
-    /* no commits / no repo */
-  }
-  return { commits, range: range === "--not" ? "未推送提交" : "upstream..HEAD", root };
-}
-
 /** One local branch that has unpushed commits (or is new on the remote). */
 export interface PendingBranch {
   branch: string;
@@ -628,14 +603,6 @@ export async function gitBranchDelete(root: string, name: string, remote: boolea
   return { deleted: name };
 }
 
-/** Ahead/behind of a branch relative to the current HEAD. */
-export async function gitCompare(root: string, branchName: string): Promise<{ ahead: number; behind: number }> {
-  const out = await git(root, ["rev-list", "--left-right", "--count", `HEAD...${branchName}`]);
-  const m = /^\s*(\d+)\s+(\d+)/.exec(out);
-  // left = behind (commits in HEAD not in branch), right = ahead
-  return { ahead: m ? Number(m[2]) : 0, behind: m ? Number(m[1]) : 0 };
-}
-
 /** Commit lists for 对比: commits only in the branch (ahead of HEAD) and only
  *  in HEAD (behind), newest first. */
 export async function gitCompareDetail(
@@ -748,12 +715,6 @@ export async function gitStashPop(root: string, ref: string): Promise<{ output: 
 export async function gitStashDrop(root: string, ref: string): Promise<{ output: string }> {
   const out = await git(root, ["stash", "drop", ref], 30000);
   return { output: out.trim() };
-}
-
-/** Detached checkout of an exact commit. */
-export async function gitCheckoutHash(root: string, hash: string): Promise<{ hash: string }> {
-  await git(root, ["checkout", hash.trim()], 60000);
-  return { hash: hash.trim() };
 }
 
 /** 回滚（revert）一个在当前分支历史中的提交：生成一条反向提交。

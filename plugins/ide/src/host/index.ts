@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { NS, IdeSchema } from "./schema";
 import { listDir, readFileText, writeFileText, renameEntry, removeEntry, makeDir } from "./fsops";
 import { resolveWorkspace } from "./workspace";
-import { gitLog, gitStatusAll, gitAdd, gitAddMany, gitBranches, gitPendingCommits, gitPendingBranches, gitCommitFiles, gitInit, gitCommit, gitPull, gitPush, gitPushBranch, gitCheckout, gitCheckoutForce, gitCheckoutSmart, gitBranchRename, gitBranchCreate, gitBranchDelete, gitCompare, gitCompareDetail, gitRestore, gitStashPush, gitStashList, gitStashPop, gitStashDrop, gitCheckoutHash, gitCommitRevert, gitDiffList, gitDiffDetail, gitIgnoreAdd, gitRemotes, gitRemoteAdd } from "./git";
+import { gitLog, gitStatusAll, gitAdd, gitAddMany, gitBranches, gitPendingBranches, gitCommitFiles, gitInit, gitCommit, gitPull, gitPush, gitPushBranch, gitCheckout, gitCheckoutForce, gitCheckoutSmart, gitBranchRename, gitBranchCreate, gitBranchDelete, gitCompareDetail, gitRestore, gitStashPush, gitStashList, gitStashPop, gitStashDrop, gitCommitRevert, gitDiffList, gitDiffDetail, gitIgnoreAdd, gitRemotes, gitRemoteAdd } from "./git";
 import { startWorkspaceWatcher, type FsEventInfo } from "./watcher";
 import { createTerminalManager, type TerminalManager } from "./terminal";
 import type { IdeReq, IdeResult, IdeDoc } from "../shared/types";
@@ -280,13 +280,6 @@ async function dispatch(req: IdeReq, root: () => string, home: string, terminals
       }
       return await gitBranches(repo);
     }
-    case "git.pending": {
-      const cwd = root();
-      if (!cwd) throw new Error("no workspace root — call resolve first");
-      let repo = String(payload.repo ?? "") || cwd;
-      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
-      return await gitPendingCommits(repo);
-    }
     case "git.pendingBranches": {
       const cwd = root();
       if (!cwd) throw new Error("no workspace root — call resolve first");
@@ -401,14 +394,6 @@ async function dispatch(req: IdeReq, root: () => string, home: string, terminals
       if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
       return await gitBranchDelete(repo, String(payload.name ?? ""), payload.remote === true);
     }
-    case "git.compare": {
-      const cwd = root();
-      if (!cwd) throw new Error("no workspace root — call resolve first");
-      const repo = String(payload.repo ?? "") || cwd;
-      const name = String(payload.name ?? "");
-      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
-      return await gitCompare(repo, name);
-    }
     case "git.compareDetail": {
       const cwd = root();
       const repo = String(payload.repo ?? "") || cwd;
@@ -468,14 +453,6 @@ async function dispatch(req: IdeReq, root: () => string, home: string, terminals
       const repo = String(payload.repo ?? "") || cwd;
       if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
       return await gitRemoteAdd(repo, String(payload.name ?? ""), String(payload.url ?? ""));
-    }
-    case "git.checkoutHash": {
-      const cwd = root();
-      const repo = String(payload.repo ?? "") || cwd;
-      const hash = String(payload.hash ?? "");
-      if (!hash) throw new Error("missing hash");
-      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
-      return await gitCheckoutHash(repo, hash);
     }
     case "git.commitRevert": {
       const cwd = root();
