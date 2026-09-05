@@ -13,16 +13,18 @@
  */
 
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactElement } from "react";
-import { useIdeDoc, call, ideStatus, openForSession } from "./ideApi";
+import { useIdeDoc, call, ideStatus, openForSession, onIdeBus, emitIdeBus } from "./ideApi";
 import { ideStore } from "./ideStore";
 import { FileTree } from "./FileTree";
 import { GitHistory } from "./GitHistory";
 import { EditorGroup, type EditorGroupHandle, type EditorTabSnapshot } from "./editor/EditorGroup";
+import { TerminalPanel } from "./TerminalPanel";
+import { maskStyle } from "./overlay";
 import type { FsEntry, GitRepoStatus } from "../shared/types";
 
 type PanelId = "files" | "git";
 
-const PANEL_WIDTH = 280;
+const PANEL_DEFAULT_W = 280;
 
 const FILES_ICON = (
   <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden="true">
@@ -31,10 +33,12 @@ const FILES_ICON = (
   </svg>
 );
 const GIT_ICON = (
-  <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden="true">
-    <circle cx="5" cy="4" r="1.8" />
-    <circle cx="11" cy="12" r="1.8" />
-    <path d="M6.2 5.2 10.8 10.6" />
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="6" cy="5" r="2.2" />
+    <circle cx="18" cy="7" r="2.2" />
+    <circle cx="6" cy="19" r="2.2" />
+    <path d="M6 7.2v9.6" />
+    <path d="M18 9.2a9 9 0 0 1-9 9" />
   </svg>
 );
 const TERM_ICON = (
@@ -108,6 +112,10 @@ interface WsCache {
   expanded: string[];
   tabs: EditorTabSnapshot[];
   activeUri: string | null;
+  /** Right function-panel width (px). */
+  panelW?: number;
+  /** Bottom terminal share of the workbench height. */
+  termRatio?: number;
 }
 
 function wsCacheKey(cwd: string): string {
@@ -160,7 +168,17 @@ export function Workbench(): ReactElement {
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [input, setInput] = useState<InputDialog | null>(null);
   const [confirm, setConfirm] = useState<ConfirmDialog | null>(null);
-  const termSeq = useRef(0);
+  const [termVisible, setTermVisible] = useState(false);
+  const [termRatio, setTermRatio] = useState(0.32); // bottom share of the workbench height
+  const [mainColH, setMainColH] = useState(400);
+  const [dividerHover, setDividerHover] = useState(false);
+  const [termDragging, setTermDragging] = useState(false);
+  const splitRatioRef = useRef(0.32);
+  const [panelW, setPanelW] = useState(PANEL_DEFAULT_W);
+  const [panelDividerHover, setPanelDividerHover] = useState(false);
+  const [panelDragging, setPanelDragging] = useState(false);
+  /** Floating guide rendered in the outer container at a recorded coordinate. */
+  const [guide, setGuide] = useState<{ axis: "x" | "y"; pos: number } | null>(null);
 
   const root = doc.cwd || "";
   // Per-workspace UI state (open editors are cached separately via the
@@ -173,6 +191,78 @@ export function Workbench(): ReactElement {
     return () => clearTimeout(t);
   }, [toast]);
 
+  // Track the workbench height (full-width bottom terminal keeps its share).
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setMainColH(el.clientHeight));
+    ro.observe(el);
+    setMainColH(el.clientHeight);
+    return () => ro.disconnect();
+  }, []);
+
+  // mdd-note style divider drag: rAF-throttled mousemove, direct DOM sizing
+  // while dragging, commit the ratio on mouseup.
+  function startDividerDrag(e: React.MouseEvent<HTMLDivElement>): void {
+    e.preventDefault();
+    const container = rootRef.current;
+    const term = container ? (container.querySelector("[data-ide-term]") as HTMLElement | null) : null;
+    if (!container || !term) return;
+    splitRatioRef.current = termRatio;
+    setTermDragging(true);
+    let raf = -1;
+    const move = (ev: MouseEvent): void => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const rect = container.getBoundingClientRect();
+        const usable = Math.max(100, rect.height - 6);
+        const h = Math.min(rect.height * 0.75, Math.max(100, rect.bottom - ev.clientY));
+        term.style.height = `${Math.round(h)}px`;
+        splitRatioRef.current = Math.min(0.75, Math.max(0.1, h / usable));
+        setGuide({ axis: "y", pos: Math.round(rect.height - h) });
+      });
+    };
+    const up = (): void => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      setTermDragging(false);
+      setGuide(null);
+      setTermRatio(splitRatioRef.current);
+      void writeWsCache(root, { ...buildSnapshot(), termRatio: splitRatioRef.current });
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  }
+
+  // Right function-panel width drag (same pattern; commits px width).
+  function startPanelDrag(e: React.MouseEvent<HTMLDivElement>): void {
+    e.preventDefault();
+    const rootEl = rootRef.current;
+    const el = rootEl ? (rootEl.querySelector("[data-ide-right-panel]") as HTMLElement | null) : null;
+    if (!rootEl || !el) return;
+    const startBoundary = e.currentTarget.getBoundingClientRect().right;
+    const startW = panelW;
+    const clamp = (w: number): number => Math.round(Math.min(Math.max(w, 180), rootEl.clientWidth * 0.62));
+    let cur = startW;
+    setPanelDragging(true);
+    const move = (ev: MouseEvent): void => {
+      cur = clamp(startW + (startBoundary - ev.clientX));
+      el.style.width = `${cur}px`;
+      setGuide({ axis: "x", pos: Math.round(ev.clientX - rootEl.getBoundingClientRect().left) });
+    };
+    const up = (): void => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      setPanelDragging(false);
+      setGuide(null);
+      setPanelW(cur);
+      void writeWsCache(root, { ...buildSnapshot(), panelW: cur });
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  }
+
   // --- per-workspace state engine ---
   const prevRootRef = useRef("");
   const panelRef = useRef(panel);
@@ -181,6 +271,10 @@ export function Workbench(): ReactElement {
   selectedDirRef.current = selectedDir;
   const expandedRef2 = useRef(expandedPaths);
   expandedRef2.current = expandedPaths;
+  const termRatioRef = useRef(termRatio);
+  termRatioRef.current = termRatio;
+  const panelWRef = useRef(panelW);
+  panelWRef.current = panelW;
 
   const buildSnapshot = (): WsCache => {
     const g = editorRef.current;
@@ -192,6 +286,8 @@ export function Workbench(): ReactElement {
       expanded: expandedRef2.current,
       tabs: snap.tabs,
       activeUri: snap.activeUri,
+      panelW: panelWRef.current,
+      termRatio: termRatioRef.current,
     };
   };
 
@@ -216,6 +312,9 @@ export function Workbench(): ReactElement {
     setSelectedDir(cached?.selectedDir || root);
     setExpandedPaths(cached?.expanded ?? []);
     setPanel(cached?.panel ?? "files");
+    setPanelW(cached?.panelW ?? PANEL_DEFAULT_W);
+    setTermRatio(cached?.termRatio ?? 0.32);
+    splitRatioRef.current = cached?.termRatio ?? 0.32;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [root]);
 
@@ -319,6 +418,10 @@ export function Workbench(): ReactElement {
     return () => cancelAnimationFrame(raf);
   }, [isOverlayOpen]);
 
+  // Chrome "提交" → modal, "推送" → modal are handled in IdeOverlay. Git ops
+  // performed elsewhere (branch menu / dialogs) notify us to refresh.
+  useEffect(() => onIdeBus("git.changed", () => setReloadTick((x) => x + 1)), []);
+
   // Filesystem changes pushed by the host watcher (fsRev bumps): debounce,
   // then refresh the tree + git badges and reload open clean documents.
   const prevFsRev = useRef<number>(0);
@@ -397,13 +500,12 @@ export function Workbench(): ReactElement {
     }
   }
 
-  function openTerminalPane(): void {
-    termSeq.current += 1;
-    editorRef.current?.openPane("terminal", `终端 ${termSeq.current}`);
-  }
-
   function togglePanel(id: PanelId): void {
     setPanel((p) => (p === id ? null : id));
+  }
+
+  function toggleTerminal(): void {
+    setTermVisible((v) => !v);
   }
 
   // Git rail icon is only shown once the workspace is a git repo; auto-leave
@@ -528,23 +630,34 @@ export function Workbench(): ReactElement {
     });
   }
 
-  function runFsMenu(item: "addVcs" | "newFile" | "newDir" | "rename" | "delete"): void {
+  function runFsMenu(item: "addVcs" | "newFile" | "newDir" | "rename" | "delete" | "restore" | "unstage" | "ignore" | "copyPath"): void {
     const p = menu?.fsPath ?? "";
     const isDir = menu?.fsIsDir ?? false;
-    const code = menu?.fsCode ?? "";
     const repo = menu?.fsRepo ?? "";
     setMenu(null);
+
+    const gitOp = async (op: string, payload: Record<string, unknown>, okMsg: string): Promise<void> => {
+      try {
+        await call(op, payload);
+        notify(okMsg);
+        emitIdeBus("git.changed");
+      } catch (err) {
+        notify(err instanceof Error ? err.message : String(err));
+      }
+    };
+
     if (item === "addVcs") {
       if (!p || !repo) return;
-      void (async () => {
-        try {
-          await call("git.add", { repo, file: p });
-          notify(`已加入 VCS：${baseName(p)}`);
-          bump();
-        } catch (err) {
-          notify(err instanceof Error ? err.message : String(err));
-        }
-      })();
+      void gitOp("git.add", { repo, file: p }, `已加入 VCS：${baseName(p)}`);
+    } else if (item === "restore" || item === "unstage") {
+      if (!p || !repo) return;
+      void gitOp("git.restore", { repo, file: p, staged: item === "unstage" }, item === "unstage" ? `已取消暂存：${baseName(p)}` : `已回滚：${baseName(p)}`);
+    } else if (item === "ignore") {
+      if (!p || !repo) return;
+      void gitOp("git.ignore", { repo, file: p, isDir }, `已加入忽略列表：${baseName(p)}`);
+    } else if (item === "copyPath") {
+      if (!p) return;
+      void navigator.clipboard?.writeText(p).then(() => notify("路径已复制")).catch(() => notify("复制失败"));
     } else if (item === "newFile" || item === "newDir") {
       const base = isDir ? p : dirName(p);
       setSelectedDir(base);
@@ -554,7 +667,37 @@ export function Workbench(): ReactElement {
     } else if (item === "delete") {
       removeEntry(p, isDir);
     }
-    void code;
+  }
+
+  /** File/folder context menu items, built from the current fs menu target. */
+  function fsMenuItems(): MenuItem[] {
+    const items: MenuItem[] = [];
+    const p = menu?.fsPath ?? "";
+    const isDir = menu?.fsIsDir ?? false;
+    const code = menu?.fsCode ?? "";
+    const repo = menu?.fsRepo ?? "";
+
+    if (!isDir && repo && code === "?") {
+      items.push({ label: "加入 VCS", run: () => runFsMenu("addVcs") });
+    }
+    if (!isDir && repo && (code === "M" || code === "A")) {
+      items.push({ label: "取消暂存", run: () => runFsMenu("unstage") });
+      items.push({ label: "回滚（放弃更改）", run: () => runFsMenu("restore"), danger: true });
+    }
+    if (repo) {
+      items.push({ label: "加入忽略列表", run: () => runFsMenu("ignore") });
+    }
+    if (isDir) {
+      items.push({ label: "新建文件", run: () => runFsMenu("newFile") });
+      items.push({ label: "新建文件夹", run: () => runFsMenu("newDir") });
+    }
+    if (!isDir) {
+      items.push({ label: "复制路径", run: () => runFsMenu("copyPath") });
+    }
+    items.push({ label: "重命名", run: () => runFsMenu("rename") });
+    items.push({ label: "删除", run: () => runFsMenu("delete"), danger: true });
+    void p;
+    return items;
   }
 
   /* ---------------- tab menu ---------------- */
@@ -569,29 +712,89 @@ export function Workbench(): ReactElement {
     else g.closeAll();
   }
 
+  /** Tab context menu items (right-click on an editor tab). */
+  function tabMenuItems(): MenuItem[] {
+    const dirty = menu?.tabDirty ?? false;
+    const isFile = menu?.tabIsFile ?? false;
+    const items: MenuItem[] = [];
+    if (dirty && isFile) items.push({ label: "保存", run: () => runTabMenu("save") });
+    items.push({ label: "关闭", run: () => runTabMenu("close") });
+    items.push({ label: "关闭其他", run: () => runTabMenu("closeOthers") });
+    items.push({ label: "关闭所有", run: () => runTabMenu("closeAll") });
+    return items;
+  }
+
   /* ---------------- render ---------------- */
+  const bottomH = Math.max(100, Math.min(Math.round((mainColH - 6) * termRatio), Math.round(mainColH * 0.75)));
   return (
     <div
       ref={rootRef}
-      style={{ display: "flex", flexDirection: "row", height: "100%", minWidth: 0, position: "relative" }}
+      style={{
+        display: "flex", flexDirection: "row", height: "100%", minWidth: 0, position: "relative",
+        overflow: "hidden",
+      }}
     >
-      {/* editor area */}
-      <div style={{ flex: 1, minWidth: 0 }}>
-        {root ? (
-          <EditorGroup ref={editorRef} onNotify={notify} />
-        ) : (
-          <EmptyState root={root} status={status} note={doc.note} onRetry={() => void call("resolve", { sessionId: doc.sessionId })} />
-        )}
+      {/* main column: editors */}
+      <div
+        style={{
+          flex: 1,
+          minWidth: 0,
+          display: "flex",
+          flexDirection: "column",
+          height: termVisible ? `calc(100% - ${bottomH}px)` : "100%",
+          overflow: "hidden",
+        }}
+      >
+        <div data-ide-editor style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+          <div style={{ flex: 1, minHeight: 0 }}>
+            {root ? (
+              <EditorGroup ref={editorRef} onNotify={notify} />
+            ) : (
+              <EmptyState root={root} status={status} note={doc.note} onRetry={() => void call("resolve", { sessionId: doc.sessionId })} />
+            )}
+          </div>
+        </div>
       </div>
 
-      {/* right function panel */}
+      {/* right function panel (width draggable) */}
       {panel && (
-        <div
-          style={{
-            width: PANEL_WIDTH, flex: "none", borderLeft: "1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.06))",
-            display: "flex", flexDirection: "column", minWidth: 0, background: "var(--dsw-alias-bg-base, #fff)",
-          }}
-        >
+        <>
+          <div
+            onMouseDown={startPanelDrag}
+            onMouseEnter={() => {
+              setPanelDividerHover(true);
+              const r = rootRef.current;
+              const el = r ? (r.querySelector("[data-ide-right-panel]") as HTMLElement | null) : null;
+              if (r && el) setGuide({ axis: "x", pos: el.getBoundingClientRect().left - r.getBoundingClientRect().left });
+            }}
+            onMouseLeave={() => {
+              setPanelDividerHover(false);
+              if (!panelDragging) setGuide(null);
+            }}
+            title="拖动调整面板宽度"
+            style={{
+              width: 10,
+              flex: "none",
+              cursor: "col-resize",
+              position: "relative",
+              alignSelf: "flex-start",
+              height: termVisible ? `calc(100% - ${bottomH}px)` : "100%",
+              zIndex: 3,
+            }}
+          ></div>
+          <div
+            data-ide-right-panel
+            style={{
+              width: panelW,
+              flex: "none",
+              borderLeft: "1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08))",
+              display: "flex",
+              flexDirection: "column",
+              minWidth: 0,
+              background: "var(--dsw-alias-bg-base, #fff)",
+              height: termVisible ? `calc(100% - ${bottomH}px)` : "100%",
+            }}
+          >
           <div
             style={{
               padding: "6px 10px", fontSize: 12, fontWeight: 600, letterSpacing: ".02em", flex: "none",
@@ -635,12 +838,13 @@ export function Workbench(): ReactElement {
                 <EmptyState root={root} status={status} note={doc.note} onRetry={() => void call("resolve", { sessionId: doc.sessionId })} />
               )
             ) : root ? (
-              <GitHistory root={root} />
+              <GitHistory root={root} refreshTick={reloadTick} />
             ) : (
               <div style={{ padding: 12, fontSize: 12.5, color: "var(--dsw-alias-label-secondary, #61666b)" }}>等待工作区…</div>
             )}
           </div>
-        </div>
+          </div>
+        </>
       )}
 
       {/* right-most icon rail */}
@@ -677,13 +881,15 @@ export function Workbench(): ReactElement {
         <div style={{ flex: 1 }} />
         <button
           type="button"
-          title="终端"
-          aria-label="终端"
-          onClick={openTerminalPane}
+          title={termVisible ? "隐藏终端面板" : "显示终端面板"}
+          aria-label="终端面板"
+          aria-pressed={termVisible}
+          onClick={toggleTerminal}
           style={{
             width: 32, height: 32, border: "none", borderRadius: 8, cursor: "pointer", display: "inline-flex",
             alignItems: "center", justifyContent: "center", flex: "none", marginBottom: 8,
-            color: "var(--dsw-alias-label-tertiary, #81858c)",
+            color: termVisible ? "var(--dsw-alias-label-primary, #0f1115)" : "var(--dsw-alias-label-tertiary, #81858c)",
+            background: termVisible ? "var(--dsw-alias-interactive-bg-hover, rgba(0,0,0,.08))" : "transparent",
           }}
         >
           {TERM_ICON}
@@ -695,40 +901,7 @@ export function Workbench(): ReactElement {
         <ContextMenu
           x={menu.x}
           y={menu.y}
-          items={
-            menu.kind === "tab"
-              ? [
-                  ...(menu.tabDirty && menu.tabIsFile
-                    ? [{ label: "保存", run: () => runTabMenu("save") } as const]
-                    : []),
-                  { label: "关闭", run: () => runTabMenu("close") },
-                  { label: "关闭其他", run: () => runTabMenu("closeOthers") },
-                  { label: "关闭所有", run: () => runTabMenu("closeAll") },
-                ]
-              : menu.fsCode === "?"
-                ? [
-                    { label: "加入 VCS", run: () => runFsMenu("addVcs") },
-                    ...(menu.fsIsDir
-                      ? [
-                          { label: "新建文件", run: () => runFsMenu("newFile") },
-                          { label: "新建文件夹", run: () => runFsMenu("newDir") },
-                        ]
-                      : []),
-                    { label: "重命名", run: () => runFsMenu("rename") },
-                    { label: "删除", run: () => runFsMenu("delete"), danger: true },
-                  ]
-                : menu.fsIsDir
-                  ? [
-                      { label: "新建文件", run: () => runFsMenu("newFile") },
-                      { label: "新建文件夹", run: () => runFsMenu("newDir") },
-                      { label: "重命名", run: () => runFsMenu("rename") },
-                      { label: "删除", run: () => runFsMenu("delete"), danger: true },
-                    ]
-                  : [
-                      { label: "重命名", run: () => runFsMenu("rename") },
-                      { label: "删除", run: () => runFsMenu("delete"), danger: true },
-                    ]
-          }
+          items={menu.kind === "tab" ? tabMenuItems() : fsMenuItems()}
           onClose={() => setMenu(null)}
         />
       )}
@@ -772,7 +945,7 @@ export function Workbench(): ReactElement {
       {toast && (
         <div
           style={{
-            position: "absolute", bottom: 12, left: "50%", transform: "translateX(-50%)",
+            position: "absolute", bottom: termVisible ? bottomH + 14 : 12, left: "50%", transform: "translateX(-50%)",
             padding: "6px 12px", borderRadius: 8, fontSize: 12, whiteSpace: "nowrap", zIndex: 80,
             background: "var(--dsw-specific-info-bg, rgba(30,110,220,.1))",
             color: "var(--dsw-alias-label-primary, #0f1115)", boxShadow: "0 4px 16px rgba(0,0,0,.12)",
@@ -781,6 +954,70 @@ export function Workbench(): ReactElement {
           {toast}
         </div>
       )}
+
+      {/* floating divider guide (rendered in the outer container, hover/drag) */}
+      {guide && (
+        <div
+          style={{
+            position: "absolute",
+            zIndex: 70,
+            pointerEvents: "none",
+            borderRadius: 2,
+            background: "rgba(64,150,255,.6)",
+            ...(guide.axis === "y"
+              ? { left: 0, right: 40, top: guide.pos - 1, height: 3 }
+              : { top: 0, bottom: termVisible ? bottomH : 0, left: guide.pos - 1, width: 3 }),
+          }}
+        />
+      )}
+
+      {termVisible && (
+        <div
+          onMouseDown={startDividerDrag}
+          onMouseEnter={() => {
+            setDividerHover(true);
+            const r = rootRef.current;
+            const wrap = r ? (r.querySelector("[data-ide-term]") as HTMLElement | null) : null;
+            if (r && wrap) setGuide({ axis: "y", pos: wrap.getBoundingClientRect().top - r.getBoundingClientRect().top });
+          }}
+          onMouseLeave={() => {
+            setDividerHover(false);
+            if (!termDragging) setGuide(null);
+          }}
+          title="拖动调整高度"
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 40,
+            bottom: `${Math.max(0, bottomH - 5)}px`,
+            height: 10,
+            zIndex: 62,
+            cursor: "row-resize",
+          }}
+        />
+      )}
+
+      {/* terminal bottom panel — full-width row under every column */}
+      <div
+        data-ide-term
+        style={{
+          display: termVisible ? "block" : "none",
+          position: "absolute",
+          left: 0,
+          right: 40,
+          bottom: 0,
+          height: termVisible ? bottomH : 0,
+          borderTop: "1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.10))",
+          borderRight: "1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08))",
+          background: "var(--dsw-alias-bg-base, #fff)",
+          overflow: "hidden",
+          zIndex: 30,
+        }}
+      >
+        <div style={{ position: "absolute", top: 1, left: 0, right: 0, bottom: 0 }}>
+          <TerminalPanel visible={termVisible} workspaceKey={root} />
+        </div>
+      </div>
     </div>
   );
 }
@@ -938,7 +1175,7 @@ function DialogShell({ onCancel, children }: { onCancel: () => void; children: R
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onCancel();
       }}
-      style={{ position: "fixed", inset: 0, zIndex: 100, background: "rgba(0,0,0,.18)", display: "flex", alignItems: "center", justifyContent: "center" }}
+      style={maskStyle(100)}
     >
       <div
         style={{

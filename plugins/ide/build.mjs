@@ -18,6 +18,7 @@
 
 import { build } from "esbuild";
 import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -82,14 +83,37 @@ async function inlineCssAssets(cssPath, text) {
   });
 }
 
+/** Resolve a bare css specifier (@scope/pkg/path.css) against node_modules
+ *  walking up from a directory (avoids build.resolve re-entrancy). */
+function resolveBareCss(resolveDir, spec) {
+  const segs = spec.split("/");
+  const pkgSegs = spec.startsWith("@") ? 2 : 1;
+  const pkg = segs.slice(0, pkgSegs).join("/");
+  const rest = segs.slice(pkgSegs).join("/");
+  let dir = resolveDir;
+  for (;;) {
+    const base = join(dir, "node_modules", pkg);
+    if (existsSync(base)) {
+      return rest ? join(base, rest) : null;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
 const monacoCssPlugin = {
   name: "monaco-css",
   setup(build) {
-    build.onResolve({ filter: /\.css$/ }, (args) => ({
-      path: args.path.startsWith(".") ? join(args.resolveDir, args.path) : args.path,
-      namespace: "monaco-css",
-      sideEffects: true
-    }));
+    build.onResolve({ filter: /\.css$/ }, (args) => {
+      const real = args.path.startsWith(".") ? join(args.resolveDir, args.path) : resolveBareCss(args.resolveDir, args.path);
+      if (!real || !existsSync(real)) return undefined; // let esbuild handle it
+      return {
+        path: real,
+        namespace: "monaco-css",
+        sideEffects: true
+      };
+    });
     build.onLoad({ filter: /.*/, namespace: "monaco-css" }, async (args) => {
       let text = await readFile(args.path, "utf8");
       text = await inlineCssAssets(args.path, text);
@@ -138,6 +162,10 @@ ${body}
   console.log("  [ok] lib/client.js");
 }
 
+/** Native / runtime-provided node modules the HOST bundle must NOT inline
+ *  (resolved from the profile module tree at runtime). */
+const HOST_EXTERNALS = ["node-pty", "ws"];
+
 async function buildHost() {
   const result = await build({
     entryPoints: [join(root, "src/host/index.ts")],
@@ -146,6 +174,7 @@ async function buildHost() {
     platform: "node",
     target: ["es2022"],
     plugins: [dshExternalsPlugin],
+    external: HOST_EXTERNALS,
     minify: false,
     write: false,
     logLevel: "silent",

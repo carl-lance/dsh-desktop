@@ -32,6 +32,7 @@ import "monaco-editor/basic-languages/monaco.contribution";
 // contribution; import it so .json files get monarch highlighting. Its
 // worker-backed validation features stay idle behind the stub worker.
 import "monaco-editor/language/json/monaco.contribution";
+import { CODIconFontDataUrl } from "./codiconFontData";
 
 let themed = false;
 
@@ -57,6 +58,74 @@ function ensureWorkerStub(): void {
   }
 }
 ensureWorkerStub();
+
+/** Inline the codicon font so gutter icons (folding arrows etc.) render. */
+function ensureCodiconFont(): void {
+  if (document.getElementById("dsh-ide-codicon-font")) return;
+  const st = document.createElement("style");
+  st.id = "dsh-ide-codicon-font";
+  st.textContent = `@font-face{font-family:'codicon';font-style:normal;font-weight:400;font-display:block;src:url(${CODIconFontDataUrl}) format('truetype')}`;
+  document.head.appendChild(st);
+}
+ensureCodiconFont();
+
+/**
+ * JSON-specific folding provider: Monaco's json contribution can return no
+ * foldable regions when its worker-backed features are idle, so register a
+ * lightweight brace-scanner (string-aware) that always yields object folds.
+ */
+try {
+  const scan = (text: string): Array<{ start: number; end: number }> => {
+    const lines = text.split("\n");
+    const depthStart: number[] = [];
+    let depth = 0;
+    const out: Array<{ start: number; end: number }> = [];
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      let inStr = false;
+      let esc = false;
+      let delta = 0;
+      for (const ch of line) {
+        if (inStr) {
+          if (esc) esc = false;
+          else if (ch === "\\") esc = true;
+          else if (ch === '"') inStr = false;
+          continue;
+        }
+        if (ch === '"') inStr = true;
+        else if (ch === "{") {
+          delta++;
+          depthStart[depth] = i;
+          depth++;
+        } else if (ch === "}") {
+          if (depth > 0) {
+            depth--;
+            const start = depthStart[depth];
+            if (start !== undefined && start < i) out.push({ start, end: i });
+          }
+        }
+      }
+      void delta;
+    }
+    return out;
+  };
+  monaco.languages.registerFoldingRangeProvider("json", {
+    provideFoldingRanges: (model) => {
+      try {
+        const ranges = scan(model.getValue());
+        return ranges.map((r) => ({
+          start: r.start + 1,
+          end: r.end + 1,
+          kind: monaco.languages.FoldingRangeKind.Region,
+        }));
+      } catch {
+        return [];
+      }
+    },
+  });
+} catch {
+  /* folding provider registration is best-effort */
+}
 
 /** Register the dsh-skin light theme once (reads CSS custom properties). */
 export function ensureMonacoTheme(): void {

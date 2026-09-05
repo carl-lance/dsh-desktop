@@ -42,6 +42,8 @@ export function createMonacoEditor(input: CreateMonacoEditorInput): { editor: IE
     scrollBeyondLastLine: false,
     wordWrap: "off",
     folding: true,
+    foldingStrategy: "indentation",
+    foldingHighlight: true,
     renderLineHighlight: "all",
     glyphMargin: false,
     lineNumbersMinChars: 3,

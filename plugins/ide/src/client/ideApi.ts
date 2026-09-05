@@ -17,7 +17,7 @@ import type { IdeDoc, IdeReq } from "../shared/types";
 type Listener = () => void;
 
 /** Cross-component UI events (e.g. chrome → workbench navigation). */
-export type IdeBusEvent = "open-commit" | "open-push";
+export type IdeBusEvent = "open-commit" | "open-push" | "git.changed";
 
 const busListeners = new Set<(ev: IdeBusEvent) => void>();
 

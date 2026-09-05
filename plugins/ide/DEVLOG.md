@@ -3,6 +3,81 @@
 > 实时记录 dsh-ide 插件的实现进度、踩坑与决策。规划见 `PLAN.md`；
 > 终端实现方案调研见文末 §Terminal。更新日志请追加到顶部。
 
+## 最近更新（三）：分隔条交互重构 / 构建卡死排查（磁盘满）
+
+### 分隔条交互（Workbench.tsx）
+- 需求演进：先统一 左右(面板宽)/上下(终端高) 两条拖动条的粗细与 hover → 后改为“分隔条脱离面板、在最外层容器按坐标渲染悬浮线”。
+- 当前实现：两个 10px 透明命中区（panel 手柄 + terminal 顶手柄），仅负责 mousedown/enter/leave/拖动；
+  - `guide` 坐标状态（`axis:'x'|'y'` + pos）驱动**根容器悬浮线**（pointer-events:none，z 70）：竖线=面板左边界 X（内容区高）、横线=终端顶边 Y（图标栏左侧全宽）；
+  - 悬停/拖动中显示 3px 蓝线并跟随光标，松手消失；
+  - 松手后按坐标记忆：面板宽（px）/终端高占比（WsCache.panelW / termRatio）。
+- 边界边框：面板 `borderLeft`、终端 `borderTop/Right` 恢复常驻 1px 细线（此前曾因去掉自带边框只剩 hover 线而被反馈“不显示边框”，已回补）。**注意：此版（含 guide 悬浮线）最后几个改动尚未成功打包验证**。
+
+### 构建卡死排查（→ 根因：磁盘占用满）
+- 现象：host 构建 `[ok] lib/index.js` 后 client 构建卡死（CPU 持续上涨），从某次“tool call aborted”之后复现；自己终端跑同样卡。
+- 排查过程（记录备查）：
+  1. 多次提权构建在本会话被中止（审批失效）；
+  2. 用户终端 `node build.mjs --pack` 卡在 client 步 → `debug-client.mjs` 二分：
+     - `--smoke` OK（esbuild 本身正常）；
+     - 正常 / `--no-css` 全卡（排除 monaco-css 插件）；
+     - `--entry-monaco`、`--entry-workbench` 全卡；
+     - `--probe-codicon` OK，`--probe-api`（仅 monaco editor.api）卡 → 与业务代码无关；
+     - esbuild CLI 直连 monaco-api 同样卡；
+  3. 用户确认 **电脑磁盘占用已满** —— 判定为写盘/杀软扫描导致大图打包僵死，非代码问题。
+- 清理动作：删 `plugins/ide/dist`、`lib/client.js`、`.npm-cache`、npm cache/temp/回收站；待空间恢复后重新打包。
+- 遗留临时文件（可后续清理）：`plugins/ide/debug-client.mjs`（二分工具，可保留复用）、`plugins/ide/probe/{codicon-only.ts, monaco-api.ts}`。
+
+## 最近更新（二）：历史面板重构 / 推送完善 / 布局与编辑器细节
+
+### 提交历史（GitHistory）——从 @gitgraph 改为自绘虚拟滚动
+- 需求收敛：虚拟滚动 + 1000 条 + 倒序（最新在上）+ 按分支筛选 + 行交互。
+- **弃用 @gitgraph/react**（包体积 −0.1MB）：自绘行式泳道，SVG 一次性画 线/圆点/合并弧，DOM 只挂载可视行（行高 22px，onScroll 切窗口）。
+- 列分配改经典 git 图规则：当前分支主线固定最左列 0；分叉在右侧加列；只在合并/汇合回主线时向左收。每提交向下连父提交：同列垂直、跨列弧线。
+- **颜色**：`laneColor(col)` 前 16 用高区分定性色板（Okabe-Ito+Tableau），超出黄金角 HSL；跨列弧线归属“右侧那条分支”（取两侧列号较大者），修复“折线与另一分支同色”。
+- 顶部：范围下拉选择器（全部/当前/输入分支搜索列表，默认全部；外部点击/Esc 收起）；`HEAD xxx · N 条` 作为靠右半行灰色提示（悬停为行 title：显示“推导出的包含分支列表”）。
+- 交互：左键详情；右键菜单（提交详情 / 与当前对比 / 回滚该提交[仅当前分支祖先]）；提交详情弹窗（说明/作者/时间/改动文件树 + 与当前对比按钮）；对比浮层（`git.diffList` 差异文件树 + 点文件 `git.diffDetail` 行级 diff，≤600 行截断）；回滚 = `git.commitRevert`（`merge-base --is-ancestor` 校验 + 合并提交 `-m 1` + `--no-edit`）。
+- 悬停分支名推导：`buildBranchMap` 从各引用尖端沿父链 BFS 标记包含分支（不再只有尖端才有名字，也不显示“无分支标签”字样）。
+- 4s 静默轮询 git.log，捕捉终端/外部提交（内容未变不重绘）。
+
+### 分支与推送
+- 分支下拉：搜索框过滤；右键新增“基于此分支新建分支”（`git.checkout`/`git.branchCreate`，`check-ref-format` 校验、可选“创建后立即检出”）；无远程时快捷行 更新/推送 换成“设置远程”（`git.remoteAdd`，git push/pull 无上游自动 `-u` / `pull origin <分支>`）。
+- 对比 = `git.compareDetail` 两栏提交（分支独有/当前独有）→ 点提交看文件 → 一键转检出；检出 = 确认弹窗（“从 A 切换到 B”文案 + 工作区改动文件树 + 智能检出[stash→切换→pop，冲突保留搁置] / 强制检出[两段确认]）。
+- 推送：`git.pendingBranches` 按本地分支分组列出未推送（上游领先 / **新分支**（本地有远程无 → IDEA 式列出，可 push -u）/ 无远程提示）；组头复选框多选 + 二级树（分支 ⇄ 提交列表）+ “推送（N）”批量（`git.pushBranch`）。
+
+### 布局 / 视觉
+- 所有弹层遮罩统一毛玻璃：新增 `client/overlay.ts` `maskStyle(z)`（`--dsw-alias-bg-mask-2` + `backdrop-filter: blur(10px) saturate(1.25)`），14 处遮罩替换。
+- 右侧文件/Git 面板可拖宽：编辑器↔面板间 10px 分隔条（细线 1px → hover 3px 蓝）；宽度 px 按工作区记忆（WsCache.panelW）。
+- 底部终端整行但不遮图标栏：终端贴底宽 = 图标栏左侧全宽（右侧 1px 竖分隔线），编辑器列/面板/分隔条高度随终端收缩（`calc(100% - bottomH)`）不被压；终端高度比例按工作区记忆（WsCache.termRatio）。终端右上缘拖高。
+
+### 编辑器细节
+- **codicon 字体内联**：monaco CSS 聚合后 `url(codicon.ttf)` 失效 → 折叠箭头等字形空白；把 ttf base64 成 dataURL（`editor/codiconFontData.ts`）并在 `monacoHost` 注入 `@font-face`。
+- **JSON 折叠**：json contribution 在无 worker 时给不出折叠区 → host 注册字符串感知的大括号扫描折叠提供者（其余语言缩进折叠照旧，hover 显示箭头）。
+
+### 工程注意
+- 频繁“改了没生效”实为 dev host 未重启加载新包：升级流程必须彻底重启（host ESM 与 client 分开，热刷新无效）。已靠 `dsh-ide-opfail.json`（任何 op 失败写 op/参数/错误/堆栈）排查“unknown op/旧实例”类问题。
+- 客户端共 54 处 `call(op)` 与 host dispatch 一一对应核对通过；host 保留 `git.compare/git.pending/git.stash` 旧 op 未删（无调用、无副作用）。
+
+## 最近更新：提交弹窗 WebStorm 式「搁置」
+
+- 对照 WebStorm 澄清：stash 在 JetBrains 语境叫**搁置**，交互发生在提交/变更窗口里——勾选变更文件 → 搁置；且**搁置有列表管理**。据此弃用分支菜单的“贮藏/恢复贮藏”快捷行（已移除），改由提交弹窗承载。
+- 底层沿用 `git stash`（不引入 JetBrains shelf 目录）：
+  - `git.ts` 新增 `gitStashPush(root, relPaths, msg, addUntracked)`（`stash push -m` + pathspec；勾选含未跟踪文件时先 `git add` 再 push，避免 `-u` 误收无关未跟踪文件）、`gitStashList`（`stash list --format=%H%x1f%gd%x1f%gs`，解析 `On <branch>:` 前缀 → branch/message）、`gitStashPop`（捕获 stdout+stderr，冲突即抛错并保留条目）、`gitStashDrop`；顺手补 `gitIgnoreAdd` 缺失的 `readFile` import。
+  - `index.ts` dispatch 增 `git.stashPush / stashList / stashPop / stashDrop`（repo jail 同 addMany），删旧 `git.stash`。
+- `CommitDialog` 重写为页签式 **[更改 (n) | 搁置 (n)]**：
+  - 更改页 = 勾选变更树（`codeFor` 补 **D 删除**——此前删文件不进弹窗、无法提交/搁置）+ 全选/已选 + 提交说明 + 提交/提交并推送；左下新增 **搁置勾选 (n)**。
+  - 搁置页 = 跨仓库 stash 列表（首次进页签懒加载，变更后整体刷新），每项显示 message / 分支 / `stash@{n}`，`恢复搁置`（成功后自动切回更改页）+ `删除`（4s 两段确认）。
+  - 各操作结束发 `git.changed` 刷新文件树状态；弹窗保持打开可连续操作；多仓库时列表按仓库分组显示标题。
+- 交互细节：搁置命名默认 `搁置 yyyy-MM-dd HH:mm`；恢复/删除引用 `stash@{n}` 直传 execFile（无 shell，安全）。
+
+### 故障修复与 UX 打磨（验证中发现）
+- **推送列表空**：无远程仓库时 host 回退查询 `git log --not --remotes` 会被 git 解析为空（`--remotes` 展开为空 + `--not` 反掉了隐式 HEAD）→ 改为显式 `git log HEAD --not --remotes`；无远程时本地提交全部列为“未推送”。
+- **更新/推送误报错**：`git.pull`/`git.push` 对“分支无上游”抛原始英文 → 有远程时自动 `pull/push <remote> <branch>`（push 用 `-u` 建立跟踪），无远程时中文提示。
+- **推送弹窗查错仓库**：PushDialog 之前用 cwd 默认查 pending，嵌套仓库/根非仓库时查空 → 与分支菜单一致先用 `git.all` 取 `repos[0]` 再带 repo 查询（commitFiles 同修）；列表标题带仓库名。
+- **无远程入口**：分支菜单无远程时 更新/推送 合并为 **设置远程** 按钮 → 弹窗填 remote（`git.remoteAdd`，名称/URL 校验）→ 自动恢复 更新/推送。
+- **对比/检出不再只 toast**：右键 对比 → `CompareDialog`（两栏提交列表：分支独有/当前独有，点提交看改动文件 + 信息，底部可一键转检出确认）；检出 → `CheckoutDialog`（当前→目标 + 工作区改动数提醒）→ 成功全量刷新。新增 host `git.compareDetail`（HEAD..branch / branch..HEAD 提交列表）。
+- **loading**：新增 `Spinner` 组件；分支菜单快捷行（更新进行中行内 spinner、其余禁用）、头部分支按钮、重命名/删除/设置远程/检出/提交/提交并推送/推送 按钮均带 spinner + 防重入。
+- **op 失败诊断**：host 任何 op 失败写 `<DSH_HOME>/dsh-ide-opfail.json`（op/参数/错误/堆栈），dev 验证不用再手抄报错。
+
 ## 2026-09 · 架构与里程碑回顾（按实现顺序）
 
 ### M0 插件骨架与安装链路

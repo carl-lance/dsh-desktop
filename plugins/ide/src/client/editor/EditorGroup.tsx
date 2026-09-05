@@ -23,7 +23,9 @@ import {
 import type { ITextDocument } from "./types";
 import { createTextDocument, type OpenDocumentInput } from "./document";
 import { createMonacoEditor } from "./monacoEditor";
+import { TerminalPane, type TerminalPaneApi } from "../TerminalPane";
 import { call } from "../ideApi";
+import { maskStyle } from "../overlay";
 
 export type PaneKind = "document" | "terminal" | "diff";
 
@@ -98,8 +100,10 @@ export const EditorGroup = forwardRef<EditorGroupHandle, EditorGroupProps>(funct
 ): ReactElement {
   const [panes, setPanes] = useState<PaneState[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [termConfirm, setTermConfirm] = useState<{ id: string; title: string } | null>(null);
   const idSeq = useRef(0);
   const savers = useRef<Record<string, PaneSaver>>({});
+  const termOps = useRef<Record<string, TerminalPaneApi>>({});
 
   const nextId = (prefix: string): string => {
     idSeq.current += 1;
@@ -110,12 +114,7 @@ export const EditorGroup = forwardRef<EditorGroupHandle, EditorGroupProps>(funct
     setActiveId(id);
   }
 
-  function close(id: string): void {
-    const pane = panes.find((p) => p.id === id);
-    if (pane && pane.dirty) {
-      onNotify(`“${pane.title}”有未保存修改：请先 Ctrl/Cmd+S 保存`);
-      return;
-    }
+  function doClose(id: string): void {
     setPanes((ps) => ps.filter((p) => p.id !== id));
     setActiveId((a) => {
       if (a !== id) return a;
@@ -123,6 +122,23 @@ export const EditorGroup = forwardRef<EditorGroupHandle, EditorGroupProps>(funct
       const prev = rest[rest.length - 1];
       return prev ? prev.id : null;
     });
+  }
+
+  function close(id: string): void {
+    const pane = panes.find((p) => p.id === id);
+    if (!pane) return;
+    if (pane.dirty) {
+      onNotify(`“${pane.title}”有未保存修改：请先 Ctrl/Cmd+S 保存`);
+      return;
+    }
+    if (pane.kind === "terminal") {
+      const api = termOps.current[id];
+      if (api && api.running) {
+        setTermConfirm({ id, title: pane.title });
+        return;
+      }
+    }
+    doClose(id);
   }
 
   useImperativeHandle(ref, () => ({
@@ -325,6 +341,10 @@ export const EditorGroup = forwardRef<EditorGroupHandle, EditorGroupProps>(funct
                 if (api) savers.current[p.id] = api;
                 else delete savers.current[p.id];
               }}
+              onTermRegister={(api) => {
+                if (api === null) delete termOps.current[p.id];
+                else termOps.current[p.id] = api;
+              }}
               onDirty={(d) =>
                 setPanes((ps) => ps.map((x) => (x.id === p.id && x.dirty !== d ? { ...x, dirty: d } : x)))
               }
@@ -336,6 +356,58 @@ export const EditorGroup = forwardRef<EditorGroupHandle, EditorGroupProps>(funct
           </div>
         ))}
       </div>
+
+      {/* terminal running confirm */}
+      {termConfirm && (
+        <div
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setTermConfirm(null);
+          }}
+          style={maskStyle(320)}
+        >
+          <div
+            style={{
+              width: 360,
+              padding: 16,
+              borderRadius: 12,
+              background: "var(--dsw-specific-menu, var(--dsw-alias-bg-layer-2, #fff))",
+              boxShadow: "0 16px 48px rgba(0,0,0,.18)",
+              color: "var(--dsw-alias-label-primary, #0f1115)",
+            }}
+          >
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>终端仍在运行</div>
+            <div style={{ fontSize: 12.5, lineHeight: 1.7, color: "var(--dsw-alias-label-secondary, #61666b)" }}>
+              “{termConfirm.title}”有正在运行的进程。确定终止并关闭吗？
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+              <button
+                type="button"
+                onClick={() => setTermConfirm(null)}
+                style={{ padding: "5px 14px", fontSize: 12.5, cursor: "pointer", border: "1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.1))", borderRadius: 8, background: "transparent", color: "var(--dsw-alias-label-primary, #0f1115)" }}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const api = termOps.current[termConfirm.id];
+                  try {
+                    api?.kill();
+                  } catch {
+                    /* ignore */
+                  }
+                  delete termOps.current[termConfirm.id];
+                  doClose(termConfirm.id);
+                  setTermConfirm(null);
+                }}
+                style={{ padding: "5px 16px", fontSize: 12.5, cursor: "pointer", border: "1px solid var(--dsw-alias-border-danger, rgba(196,60,45,.35))", borderRadius: 8, background: "var(--dsw-specific-danger-bg, rgba(196,60,45,.12))", color: "var(--dsw-alias-danger, #c43c2d)" }}
+              >
+                终止并关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 });
@@ -343,13 +415,14 @@ export const EditorGroup = forwardRef<EditorGroupHandle, EditorGroupProps>(funct
 interface PaneViewProps {
   pane: PaneState;
   onRegister: (api: PaneSaver | null) => void;
+  onTermRegister: (api: TerminalPaneApi | null) => void;
   onDirty: (dirty: boolean) => void;
   onSaved: () => void;
   onError: (message: string) => void;
 }
 
-/** One pane surface: Monaco for documents, placeholder for others. */
-function PaneView({ pane, onRegister, onDirty, onSaved, onError }: PaneViewProps): ReactElement {
+/** One pane surface: Monaco for documents, xterm for terminals. */
+function PaneView({ pane, onRegister, onTermRegister, onDirty, onSaved, onError }: PaneViewProps): ReactElement {
   const hostRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -406,11 +479,18 @@ function PaneView({ pane, onRegister, onDirty, onSaved, onError }: PaneViewProps
       </div>
     );
   }
+  if (pane.kind === "terminal") {
+    return (
+      <div style={{ position: "relative", height: "100%", background: "var(--dsw-alias-bg-base, #fff)" }}>
+        <TerminalPane
+          onRegister={(api) => onTermRegister(api)}
+        />
+      </div>
+    );
+  }
   return (
     <div style={{ padding: 16, fontSize: 12.5, color: "var(--dsw-alias-label-secondary, #61666b)" }}>
-      {pane.kind === "terminal"
-        ? "终端将在后续里程碑接入（xterm + node-pty）；关闭含运行进程的终端时会先确认/提供终止。"
-        : "diff 标签将在 Git 变更里程碑接入（对 HEAD / 指定版本比较）。"}
+      diff 标签将在 Git 变更里程碑接入（对 HEAD / 指定版本比较）。
     </div>
   );
 }

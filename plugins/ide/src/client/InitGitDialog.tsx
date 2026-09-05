@@ -9,6 +9,7 @@
 import { useEffect, useState, type ReactElement } from "react";
 import { call } from "./ideApi";
 import { ChangeTree, type ChangeLeaf } from "./ChangeTree";
+import { maskStyle } from "./overlay";
 
 interface Props {
   root: string;
@@ -106,15 +107,7 @@ export function InitGitDialog({ root, onClose, onNotify, onDone }: Props): React
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 300,
-        background: "rgba(0,0,0,.22)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-      }}
+      style={maskStyle(300)}
     >
       <div
         style={{

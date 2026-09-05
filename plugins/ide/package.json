@@ -47,6 +47,8 @@
     "@codemirror/state": "^6.7.2",
     "@codemirror/view": "^6.43.11",
     "@gitgraph/react": "^1.6.0",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
     "esbuild": "^0.25.0",
     "monaco-editor": "^0.56.0"
   },

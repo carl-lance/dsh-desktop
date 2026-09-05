@@ -18,8 +18,9 @@ import { join } from "node:path";
 import { NS, IdeSchema } from "./schema";
 import { listDir, readFileText, writeFileText, renameEntry, removeEntry, makeDir } from "./fsops";
 import { resolveWorkspace } from "./workspace";
-import { gitLog, gitStatusAll, gitAdd, gitAddMany, gitBranches, gitPendingCommits, gitCommitFiles, gitInit } from "./git";
+import { gitLog, gitStatusAll, gitAdd, gitAddMany, gitBranches, gitPendingCommits, gitPendingBranches, gitCommitFiles, gitInit, gitCommit, gitPull, gitPush, gitPushBranch, gitCheckout, gitCheckoutForce, gitCheckoutSmart, gitBranchRename, gitBranchCreate, gitBranchDelete, gitCompare, gitCompareDetail, gitRestore, gitStashPush, gitStashList, gitStashPop, gitStashDrop, gitCheckoutHash, gitCommitRevert, gitDiffList, gitDiffDetail, gitIgnoreAdd, gitRemotes, gitRemoteAdd } from "./git";
 import { startWorkspaceWatcher, type FsEventInfo } from "./watcher";
+import { createTerminalManager, type TerminalManager } from "./terminal";
 import type { IdeReq, IdeResult, IdeDoc } from "../shared/types";
 
 /** Cordis plugin name used by loader diagnostics. */
@@ -49,6 +50,7 @@ export function apply(ctx: any): void {
     const home: string = process.env.DSH_HOME ?? "";
     const doc = (): IdeDoc => (scope.get() as IdeDoc) ?? ({} as IdeDoc);
     const run = makeQueue(log);
+    const terminals: TerminalManager = createTerminalManager(log);
 
     // Workspace watcher: (re)started whenever the resolved cwd changes.
     let stopWatch: (() => void) | null = null;
@@ -60,6 +62,8 @@ export function apply(ctx: any): void {
         stopWatch = null;
       }
       watchedCwd = cwd;
+      // Terminals belong to a workspace; switching away closes theirs.
+      terminals.killForWorkspace(cwd);
       let fsRev = Number((scope.get() as { fsRev?: unknown }).fsRev ?? 0);
       const events: FsEventInfo[] = [];
       const writeWatchDiag = (extra: Record<string, unknown>): void => {
@@ -94,6 +98,7 @@ export function apply(ctx: any): void {
           stopWatch();
           stopWatch = null;
         }
+        terminals.dispose();
       },
       "dsh-ide: watcher teardown"
     );
@@ -118,7 +123,7 @@ export function apply(ctx: any): void {
         const result: IdeResult = { reqId: req.reqId, ok: false };
         const extra: Partial<IdeDoc> = {};
         try {
-          const data = await dispatch(req, () => doc().cwd ?? "", home);
+          const data = await dispatch(req, () => doc().cwd ?? "", home, terminals);
           result.ok = true;
           result.data = data;
           if (req.op === "resolve" && data && typeof data === "object") {
@@ -132,6 +137,30 @@ export function apply(ctx: any): void {
         } catch (e) {
           result.error = e instanceof Error ? e.message : String(e);
           log(`op ${req.op} failed: ${result.error}`);
+          if (home) {
+            // Failure diagnostic: lets the webview-less loop read the exact
+            // error after a user reproduces a failing op (e.g. pull / 搁置).
+            const slim = (v: unknown): unknown =>
+              typeof v === "string" && v.length > 400 ? v.slice(0, 400) + "…(截断)" : v;
+            const payload: Record<string, unknown> = {};
+            for (const [k, v] of Object.entries(req.payload ?? {})) payload[k] = slim(v);
+            writeFile(
+              join(home, "dsh-ide-opfail.json"),
+              JSON.stringify(
+                {
+                  at: Date.now(),
+                  op: req.op,
+                  cwd: doc().cwd ?? "",
+                  payload,
+                  error: result.error,
+                  stack: e instanceof Error ? (e.stack ?? "").split("\n").slice(0, 8).join("\n") : "",
+                },
+                null,
+                2
+              ),
+              "utf8"
+            ).catch(() => undefined);
+          }
         }
         await settingsCtx.settings.update(NS, {
           resultJson: JSON.stringify(result),
@@ -151,7 +180,7 @@ export function apply(ctx: any): void {
   });
 }
 
-async function dispatch(req: IdeReq, root: () => string, home: string): Promise<unknown> {
+async function dispatch(req: IdeReq, root: () => string, home: string, terminals: TerminalManager): Promise<unknown> {
   const payload = req.payload ?? {};
   switch (req.op) {
     case "resolve": {
@@ -258,6 +287,21 @@ async function dispatch(req: IdeReq, root: () => string, home: string): Promise<
       if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
       return await gitPendingCommits(repo);
     }
+    case "git.pendingBranches": {
+      const cwd = root();
+      if (!cwd) throw new Error("no workspace root — call resolve first");
+      let repo = String(payload.repo ?? "") || cwd;
+      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
+      return await gitPendingBranches(repo);
+    }
+    case "git.pushBranch": {
+      const cwd = root();
+      const repo = String(payload.repo ?? "") || cwd;
+      const branch = String(payload.branch ?? "");
+      if (!branch) throw new Error("git.pushBranch needs branch");
+      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
+      return await gitPushBranch(repo, branch);
+    }
     case "git.commitFiles": {
       const cwd = root();
       if (!cwd) throw new Error("no workspace root — call resolve first");
@@ -291,10 +335,204 @@ async function dispatch(req: IdeReq, root: () => string, home: string): Promise<
         throw err;
       }
     }
+    case "git.commit": {
+      const cwd = root();
+      if (!cwd) throw new Error("no workspace root — call resolve first");
+      const repo = String(payload.repo ?? "") || cwd;
+      const message = String(payload.message ?? "");
+      if (!message.trim()) throw new Error("commit message is empty");
+      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
+      return await gitCommit(repo, message);
+    }
+    case "git.pull": {
+      const cwd = root();
+      if (!cwd) throw new Error("no workspace root — call resolve first");
+      const repo = String(payload.repo ?? "") || cwd;
+      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
+      return await gitPull(repo);
+    }
+    case "git.push": {
+      const cwd = root();
+      if (!cwd) throw new Error("no workspace root — call resolve first");
+      const repo = String(payload.repo ?? "") || cwd;
+      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
+      return await gitPush(repo);
+    }
+    case "git.checkout": {
+      const cwd = root();
+      if (!cwd) throw new Error("no workspace root — call resolve first");
+      const repo = String(payload.repo ?? "") || cwd;
+      const name = String(payload.name ?? "");
+      if (!name) throw new Error("git.checkout needs name");
+      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
+      return await gitCheckout(repo, name);
+    }
+    case "git.checkoutForce": {
+      const cwd = root();
+      const repo = String(payload.repo ?? "") || cwd;
+      const name = String(payload.name ?? "");
+      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
+      return await gitCheckoutForce(repo, name);
+    }
+    case "git.checkoutSmart": {
+      const cwd = root();
+      const repo = String(payload.repo ?? "") || cwd;
+      const name = String(payload.name ?? "");
+      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
+      return await gitCheckoutSmart(repo, name);
+    }
+    case "git.branchRename": {
+      const cwd = root();
+      if (!cwd) throw new Error("no workspace root — call resolve first");
+      const repo = String(payload.repo ?? "") || cwd;
+      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
+      return await gitBranchRename(repo, String(payload.from ?? ""), String(payload.to ?? ""));
+    }
+    case "git.branchCreate": {
+      const cwd = root();
+      const repo = String(payload.repo ?? "") || cwd;
+      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
+      return await gitBranchCreate(repo, String(payload.name ?? ""), payload.from ? String(payload.from) : undefined);
+    }
+    case "git.branchDelete": {
+      const cwd = root();
+      if (!cwd) throw new Error("no workspace root — call resolve first");
+      const repo = String(payload.repo ?? "") || cwd;
+      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
+      return await gitBranchDelete(repo, String(payload.name ?? ""), payload.remote === true);
+    }
+    case "git.compare": {
+      const cwd = root();
+      if (!cwd) throw new Error("no workspace root — call resolve first");
+      const repo = String(payload.repo ?? "") || cwd;
+      const name = String(payload.name ?? "");
+      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
+      return await gitCompare(repo, name);
+    }
+    case "git.compareDetail": {
+      const cwd = root();
+      const repo = String(payload.repo ?? "") || cwd;
+      const name = String(payload.name ?? "");
+      if (!name) throw new Error("git.compareDetail needs name");
+      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
+      return await gitCompareDetail(repo, name);
+    }
+    case "git.restore": {
+      const cwd = root();
+      const repo = String(payload.repo ?? "") || cwd;
+      const file = String(payload.file ?? "");
+      if (!file) throw new Error("git.restore needs file");
+      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
+      return await gitRestore(repo, file.slice(repo.length), payload.staged === true);
+    }
+    case "git.stashPush": {
+      const cwd = root();
+      const repo = String(payload.repo ?? "") || cwd;
+      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
+      const files = Array.isArray(payload.files) ? (payload.files as string[]) : [];
+      const rels = files
+        .filter((f) => f.startsWith(repo + "\\") || f.startsWith(repo + "/") || f === repo)
+        .map((f) => f.slice(repo.length).replace(/^[\\/]+/, ""));
+      return await gitStashPush(repo, rels, String(payload.message ?? ""), payload.addUntracked === true);
+    }
+    case "git.stashList": {
+      const cwd = root();
+      const repo = String(payload.repo ?? "") || cwd;
+      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
+      return await gitStashList(repo);
+    }
+    case "git.stashPop": {
+      const cwd = root();
+      const repo = String(payload.repo ?? "") || cwd;
+      const ref = String(payload.ref ?? "");
+      if (!ref) throw new Error("git.stashPop needs ref");
+      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
+      return await gitStashPop(repo, ref);
+    }
+    case "git.stashDrop": {
+      const cwd = root();
+      const repo = String(payload.repo ?? "") || cwd;
+      const ref = String(payload.ref ?? "");
+      if (!ref) throw new Error("git.stashDrop needs ref");
+      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
+      return await gitStashDrop(repo, ref);
+    }
+    case "git.remotes": {
+      const cwd = root();
+      const repo = String(payload.repo ?? "") || cwd;
+      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
+      return await gitRemotes(repo);
+    }
+    case "git.remoteAdd": {
+      const cwd = root();
+      const repo = String(payload.repo ?? "") || cwd;
+      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
+      return await gitRemoteAdd(repo, String(payload.name ?? ""), String(payload.url ?? ""));
+    }
+    case "git.checkoutHash": {
+      const cwd = root();
+      const repo = String(payload.repo ?? "") || cwd;
+      const hash = String(payload.hash ?? "");
+      if (!hash) throw new Error("missing hash");
+      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
+      return await gitCheckoutHash(repo, hash);
+    }
+    case "git.commitRevert": {
+      const cwd = root();
+      const repo = String(payload.repo ?? "") || cwd;
+      const hash = String(payload.hash ?? "");
+      if (!hash) throw new Error("git.commitRevert needs hash");
+      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
+      return await gitCommitRevert(repo, hash);
+    }
+    case "git.diffList": {
+      const cwd = root();
+      const repo = String(payload.repo ?? "") || cwd;
+      const hash = String(payload.hash ?? "");
+      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
+      return await gitDiffList(repo, hash);
+    }
+    case "git.diffDetail": {
+      const cwd = root();
+      const repo = String(payload.repo ?? "") || cwd;
+      const hash = String(payload.hash ?? "");
+      const path = String(payload.path ?? "");
+      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
+      return await gitDiffDetail(repo, hash, path);
+    }
+    case "git.ignore": {
+      const cwd = root();
+      const repo = String(payload.repo ?? "") || cwd;
+      const file = String(payload.file ?? "");
+      if (!file) throw new Error("git.ignore needs file");
+      if (repo !== cwd && !repo.startsWith(cwd + "\\") && !repo.startsWith(cwd + "/")) throw new Error("repo outside workspace");
+      return await gitIgnoreAdd(repo, file.slice(repo.length), payload.isDir === true);
+    }
     case "git.log": {
       const cwd = root();
       if (!cwd) throw new Error("no workspace root — call resolve first");
-      return await gitLog(cwd, Number(payload.count) || 120);
+      const branch = typeof payload.branch === "string" ? payload.branch.trim() : "";
+      return await gitLog(cwd, Number(payload.count) || 120, branch ? "branch" : payload.scope === "head" ? "head" : "all", branch);
+    }
+    case "term.open": {
+      const cwd = root();
+      if (!cwd) throw new Error("no workspace root — call resolve first");
+      const cols = Number(payload.cols) > 0 ? Number(payload.cols) : undefined;
+      const rows = Number(payload.rows) > 0 ? Number(payload.rows) : undefined;
+      const shellPref = ["cmd", "pwsh", "powershell"].includes(String(payload.shell)) ? (String(payload.shell) as "cmd" | "pwsh" | "powershell") : undefined;
+      return await terminals.open(cwd, { cols: cols ?? 80, rows: rows ?? 24 }, shellPref);
+    }
+    case "term.resize": {
+      const id = String(payload.id ?? "");
+      const cols = Number(payload.cols) || 80;
+      const rows = Number(payload.rows) || 24;
+      if (!id) throw new Error("term.resize needs id");
+      return { ok: terminals.resize(id, cols, rows) };
+    }
+    case "term.kill": {
+      const id = String(payload.id ?? "");
+      if (!id) throw new Error("term.kill needs id");
+      return { ok: terminals.kill(id) };
     }
     case "ui.diag": {
       if (!home) throw new Error("DSH_HOME not set");
