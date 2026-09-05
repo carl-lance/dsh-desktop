@@ -24,7 +24,7 @@ import { createTerminalManager, type TerminalManager } from "./terminal";
 import type { IdeReq, IdeResult, IdeDoc } from "../shared/types";
 
 /** Cordis plugin name used by loader diagnostics. */
-export const name = "dsh-ide";
+export const name = "dsh-plugin-ide";
 
 /** Services required by this plugin. */
 export const inject = ["settings"];

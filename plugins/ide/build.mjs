@@ -27,6 +27,12 @@ const root = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
 const PLUGIN_ID = pkg.name;
 
+// Plugin packages must use the reserved prefix so the desktop installer can
+// safely locate/remove them by exact name (see src-tauri/resources).
+if (!/^dsh-plugin-[a-z0-9][a-z0-9._-]*$/.test(String(PLUGIN_ID))) {
+  throw new Error(`package.json name must match dsh-plugin-* (got: ${PLUGIN_ID})`);
+}
+
 /** Bare specifiers the client bundle must keep external: the webview shell
  *  owns these modules (window.__DSH_BOOT__ / __ModuleLoader__ seed table). */
 const CLIENT_EXTERNALS = [

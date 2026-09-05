@@ -107,6 +107,62 @@ fn find_resource_dir(app: &tauri::App) -> Option<PathBuf> {
     None
 }
 
+/// DSH user-data home: debug builds use the dev-only tree under
+/// `<crate>/target/dsh-dev`; release builds use `%APPDATA%/.../dsh-beta` so
+/// this beta build never shares profiles/credentials with the stable `dsh`
+/// install.
+fn dsh_home_path(app: &tauri::App) -> Option<PathBuf> {
+    if cfg!(debug_assertions) {
+        Some(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("target")
+                .join("dsh-dev"),
+        )
+    } else {
+        app.path().app_config_dir().ok().map(|d| d.join("dsh-beta"))
+    }
+}
+
+/// Best-effort startup plugin installer (see resources/plugin-install.js).
+/// Never blocks booting: missing files or a failing install are logged and
+/// skipped so the desktop app always starts.
+fn install_plugins(app: &tauri::App) {
+    let Some(resource_dir) = find_resource_dir(app) else {
+        eprintln!("dsh-desktop: plugin installer skipped (resources not found)");
+        return;
+    };
+    let Some(home) = dsh_home_path(app) else {
+        eprintln!("dsh-desktop: plugin installer skipped (no dsh home)");
+        return;
+    };
+    let node_exe = resource_dir.join("node.exe");
+    let script = resource_dir.join("plugin-install.js");
+    let config = resource_dir.join("plugins.config.json");
+    let archives = resource_dir.join("plugins");
+    if !node_exe.exists() || !script.exists() || !config.exists() {
+        eprintln!("dsh-desktop: plugin installer skipped (bundled files missing)");
+        return;
+    }
+    let mut child = match Command::new(&node_exe)
+        .arg(&script)
+        .arg(&config)
+        .arg(&archives)
+        .arg(&home)
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(error) => {
+            eprintln!("dsh-desktop: plugin installer spawn failed: {error}");
+            return;
+        }
+    };
+    match child.wait() {
+        Ok(_) => eprintln!("dsh-desktop: plugin installer finished"),
+        Err(error) => eprintln!("dsh-desktop: plugin installer wait failed: {error}"),
+    }
+}
+
 fn start_dsh(app: &tauri::App) -> Result<Child, Box<dyn std::error::Error>> {
     let resource_dir = find_resource_dir(app)
         .ok_or_else(|| "packaged resources (node.exe, dsh-runtime) not found".to_string())?;
@@ -124,13 +180,8 @@ fn start_dsh(app: &tauri::App) -> Result<Child, Box<dyn std::error::Error>> {
     // dev builds (debug) use a dev-only home inside the build tree
     // (`<crate>/target/dsh-dev`) so dev sessions/credentials stay gitignored
     // and are wiped together with `cargo clean`.
-    let dsh_home = if cfg!(debug_assertions) {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join("dsh-dev")
-    } else {
-        app.path().app_config_dir()?.join("dsh")
-    };
+    let dsh_home = dsh_home_path(app)
+        .ok_or_else(|| "could not resolve dsh home".to_string())?;
     std::fs::create_dir_all(&dsh_home)?;
 
     let child = Command::new(&node_exe)
@@ -250,6 +301,9 @@ pub fn run() {
             })
             .build()?;
 
+            // Install/update bundled plugins before the backend boots.
+            install_plugins(app);
+
             match start_dsh(app) {
                 Ok(child) => {
                     app.manage(SidecarState(Mutex::new(Some(child))));
@@ -260,8 +314,7 @@ pub fn run() {
                     eprintln!("dsh-desktop: failed to start backend: {error}");
                     Err(error.into())
                 }
-            }
-        })
+            }        })
         .invoke_handler(tauri::generate_handler![quit_app, open_url, open_devtools])
         .on_window_event(|window, event| {
             // Intercept window close: show the injected dsh-styled confirmation

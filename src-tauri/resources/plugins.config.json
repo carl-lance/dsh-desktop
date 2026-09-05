@@ -1,0 +1,11 @@
+{
+  "$comment": "Startup plugin installer config. Archives live in <resources>/plugins/<archive>. previousNames lists exact old package names to remove during an upgrade; any step that fails logs and skips (startup never blocks).",
+  "plugins": [
+    {
+      "id": "dsh-plugin-ide",
+      "version": "0.1.0",
+      "archive": "dsh-plugin-ide-0.1.0.tgz",
+      "previousNames": ["dsh-ide"]
+    }
+  ]
+}

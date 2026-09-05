@@ -3,6 +3,17 @@
 > 实时记录 dsh-ide 插件的实现进度、踩坑与决策。规划见 `PLAN.md`；
 > 终端实现方案调研见文末 §Terminal。更新日志请追加到顶部。
 
+## 最近更新（五）：改名 dsh-plugin-ide + 桌面启动自动安装器 + dsh-beta 目录
+- **包名改为 `dsh-plugin-ide`**（package.json / host name export / ModuleLoader id）；build.mjs 增加前缀校验（不匹配 `dsh-plugin-*` 即构建失败）。内部 slot id、settings 命名空间 `ide`、localStorage `dsh-ide:ws:`、diag 文件名等**保持不变**（非包身份）。
+- **桌面自动安装器** `src-tauri/resources/plugin-install.js`（Node，启动前由 lib.rs `install_plugins()` 调用，失败仅日志不阻塞）：
+  - 读 `resources/plugins.config.json`（plugins 数组：id/version/archive/previousNames），安装包在 `resources/plugins/*.tgz`；
+  - 同版本已装 → 跳过并清理旧名残留；需要安装/升级 → 对 `id + previousNames` 逐个**校验目录内 package.json.name 精确一致**后移走(.bak)→解包校验包身份→装入→写 `profiles/<p>/cordis.patch.yml`→成功才删 .bak（失败回滚还原）；
+  - patch 用“块级解析”维护单个 insert 条目并保留无关条目（边角：无 marker 孤儿行清理不完美，本次已手工归一 dev 文件，fresh 安装路径干净）；
+  - 已知坑：PowerShell `$HOME` 保留变量不可赋值，脚本测试时换用 `$dshHome`。
+- **release 用户数据目录改为 `dsh-beta`**（lib.rs `dsh_home_path`），与稳定版 `dsh` 隔离；debug 仍 `target/dsh-dev`。
+- tauri.conf `bundle.resources` 增加 installer/config/plugins 三项；`resources/plugins/dsh-plugin-ide-0.1.0.tgz` 已放置。
+- dev profile 已迁移：旧 `dsh-ide` 目录删除、`dsh-plugin-ide@0.1.0` 装入、patch 单一条目。**注意：Rust 改动尚未 cargo 编译验证；dev 需重启才会以新包名加载。**
+
 ## 最近更新（四）：收尾清理与文档同步（初版已提交 77b4045）
 - 清理 host 死代码（无任何 client 调用，零行为变化）：
   - `git.pending`（已被 `git.pendingBranches` 取代）、`git.compare`（被 `git.compareDetail` 取代）、`git.checkoutHash`（从未做 UI）三个 dispatch case；

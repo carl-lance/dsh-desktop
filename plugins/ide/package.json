@@ -1,5 +1,5 @@
 {
-  "name": "dsh-ide",
+  "name": "dsh-plugin-ide",
   "description": "IDE for DeepSeek Harness Web: a center-column conversation view tab (git operations, file explorer + Monaco preview, workspace terminal — feature phases to be filled in later).",
   "version": "0.1.0",
   "type": "module",
