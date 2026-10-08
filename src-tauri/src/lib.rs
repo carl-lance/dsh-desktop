@@ -5,10 +5,11 @@
 //   2. poll 127.0.0.1:<DSH_PORT> until the backend is ready
 //   3. navigate the webview to http://127.0.0.1:<DSH_PORT>
 //   4. on exit: kill the sidecar process tree (taskkill /T /F)
+use std::io::BufRead;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
-use std::sync::Mutex;
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -24,6 +25,21 @@ const DSH_PORT: u16 = if cfg!(debug_assertions) { 30080 } else { 3080 };
 const DSH_BACKEND_READY_TIMEOUT: Duration = Duration::from_secs(120);
 
 struct SidecarState(Mutex<Option<Child>>);
+
+/// dsh web 启动时把带 token 的 URL 打印到 stdout
+/// （`dsh web: http://127.0.0.1:<port>/?token=...`），由 start_dsh 捕获，
+/// navigate_when_ready 用它导航。每次启动 token 都变，所以每次都要重新抓。
+///
+/// 从一行 stdout 里抽出带 token 的完整 URL（容忍行尾 ANSI 颜色码/空白）。
+fn extract_web_url(line: &str) -> Option<String> {
+    let start = line.find("http://")?;
+    let tail = &line[start..];
+    let end = tail
+        .find(|c: char| c.is_whitespace() || c == '\u{1b}')
+        .unwrap_or(tail.len());
+    let url = &tail[..end];
+    url.contains("token=").then(|| url.to_string())
+}
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -177,7 +193,10 @@ fn install_plugins_now(app: &tauri::AppHandle) {
     }
 }
 
-fn start_dsh(app: &tauri::App) -> Result<Child, Box<dyn std::error::Error>> {
+fn start_dsh(
+    app: &tauri::App,
+    web_url: Arc<Mutex<Option<String>>>,
+) -> Result<Child, Box<dyn std::error::Error>> {
     let resource_dir = find_resource_dir(app.handle())
         .ok_or_else(|| "packaged resources (node.exe, dsh-runtime) not found".to_string())?;
     let runtime_dir = resource_dir.join("dsh-runtime");
@@ -198,7 +217,7 @@ fn start_dsh(app: &tauri::App) -> Result<Child, Box<dyn std::error::Error>> {
         .ok_or_else(|| "could not resolve dsh home".to_string())?;
     std::fs::create_dir_all(&dsh_home)?;
 
-    let child = Command::new(&node_exe)
+    let mut child = Command::new(&node_exe)
         .arg(&bin_js)
         .arg("web")
         .arg("--port")
@@ -209,12 +228,27 @@ fn start_dsh(app: &tauri::App) -> Result<Child, Box<dyn std::error::Error>> {
         .current_dir(&runtime_dir)
         .env("DSH_HOME", &dsh_home)
         .creation_flags(CREATE_NO_WINDOW)
+        .stdout(Stdio::piped())
         .spawn()?;
     assign_to_kill_on_close_job(&child);
+
+    // 抓取 dsh web 打印到 stdout 的带 token URL（?token=），供导航使用。
+    if let Some(stdout) = child.stdout.take() {
+        thread::spawn(move || {
+            let reader = std::io::BufReader::new(stdout);
+            for line in reader.lines() {
+                let Ok(line) = line else { break };
+                if let Some(url) = extract_web_url(&line) {
+                    *web_url.lock().unwrap() = Some(url);
+                    break;
+                }
+            }
+        });
+    }
     Ok(child)
 }
 
-fn navigate_when_ready(app: tauri::AppHandle) {
+fn navigate_when_ready(app: tauri::AppHandle, web_url: Arc<Mutex<Option<String>>>) {
     thread::spawn(move || {
         // Give the window a moment to exist before polling.
         thread::sleep(Duration::from_secs(1));
@@ -222,8 +256,21 @@ fn navigate_when_ready(app: tauri::AppHandle) {
             eprintln!("dsh-desktop: backend did not become ready on port {DSH_PORT}");
             return;
         }
+        // dsh web 首次加载必须带本次启动的 ?token=；优先用捕获的 URL，
+        // 抓不到（最多等 10 秒）才退回无 token 的地址。
+        let url = {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some(u) = web_url.lock().ok().and_then(|g| g.as_ref().cloned()) {
+                    break u;
+                }
+                if Instant::now() >= deadline {
+                    break format!("http://127.0.0.1:{DSH_PORT}");
+                }
+                thread::sleep(Duration::from_millis(200));
+            }
+        };
         if let Some(window) = app.get_webview_window("main") {
-            let url = format!("http://127.0.0.1:{DSH_PORT}");
             if let Err(error) = window.navigate(tauri::Url::parse(&url).expect("valid backend url")) {
                 eprintln!("dsh-desktop: navigate failed: {error}");
             }
@@ -326,10 +373,11 @@ pub fn run() {
 
             // Plugin install now runs after the backend is ready
             // (see install_plugins_now in navigate_when_ready).
-            match start_dsh(app) {
+            let web_url = Arc::new(Mutex::new(None::<String>));
+            match start_dsh(app, web_url.clone()) {
                 Ok(child) => {
                     app.manage(SidecarState(Mutex::new(Some(child))));
-                    navigate_when_ready(app.handle().clone());
+                    navigate_when_ready(app.handle().clone(), web_url);
                     Ok(())
                 }
                 Err(error) => {

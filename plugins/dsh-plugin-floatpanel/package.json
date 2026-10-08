@@ -1,0 +1,38 @@
+{
+  "name": "dsh-plugin-floatpanel",
+  "description": "Floating panel pinned to the bottom-right corner of the DeepSeek Harness web UI (UI-only plugin, vanilla DOM, no shell seeds required).",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js"
+  ],
+  "dsh": {
+    "client": {
+      "inject": [],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "pack": "node build.mjs --pack"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  },
+  "peerDependencies": {
+    "react": "^18.2.0",
+    "@deepseek-ai/cordis": "^4.0.1"
+  },
+  "license": "MIT"
+}
