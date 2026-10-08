@@ -6,7 +6,7 @@
 //   3. navigate the webview to http://127.0.0.1:<DSH_PORT>
 //   4. on exit: kill the sidecar process tree (taskkill /T /F)
 use std::net::TcpStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::Mutex;
 use std::thread;
@@ -92,16 +92,31 @@ fn assign_to_kill_on_close_job(child: &Child) {
     }
 }
 
+/// Windows verbatim path (`\\?\E:\...`) → plain path (`E:\...`) so Node's
+/// JS-side path parsing (which knows nothing about the verbatim prefix) can
+/// resolve it. No-op for ordinary paths.
+fn normalize_win_path(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    let s = if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        s.to_string()
+    };
+    PathBuf::from(s)
+}
+
 /// Locate the packaged resource root (node.exe + dsh-runtime).
 ///
 /// Dev and bundled builds disagree about `resource_dir()`: a dev build points
 /// at `target/debug` with resources copied to `target/debug/resources`, while
 /// a bundled build points directly at the `resources` directory. Probe both.
-fn find_resource_dir(app: &tauri::App) -> Option<PathBuf> {
+fn find_resource_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
     let base = app.path().resource_dir().ok()?;
     for dir in [base.clone(), base.join("resources")] {
         if dir.join("node.exe").exists() && dir.join("dsh-runtime").is_dir() {
-            return Some(dir);
+            return Some(normalize_win_path(&dir));
         }
     }
     None
@@ -109,49 +124,31 @@ fn find_resource_dir(app: &tauri::App) -> Option<PathBuf> {
 
 /// DSH user-data home: debug builds use the dev-only tree under
 /// `<crate>/target/dsh-dev`; release builds use `%APPDATA%/.../dsh`.
-fn dsh_home_path(app: &tauri::App) -> Option<PathBuf> {
-    if cfg!(debug_assertions) {
-        Some(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("target")
-                .join("dsh-dev"),
-        )
+fn dsh_home_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let home = if cfg!(debug_assertions) {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("dsh-dev")
     } else {
-        app.path().app_config_dir().ok().map(|d| d.join("dsh"))
-    }
+        //app.path().app_config_dir().ok().map(|d| d.join("dsh"))
+        app.path().resource_dir().ok()?.join(".dsh")
+    };
+    Some(normalize_win_path(&home))
 }
 
 /// Best-effort plugin installer, run AFTER the dsh backend is ready (profiles
 /// have been seeded by then, so patch files exist and writes stick). Never
 /// blocks booting: failures are logged and skipped.
 fn install_plugins_now(app: &tauri::AppHandle) {
-    let base = match app.path().resource_dir() {
-        Ok(b) => b,
-        Err(_) => {
-            eprintln!("dsh-desktop: plugin installer skipped (no resource dir)");
-            return;
-        }
-    };
-    let resource_dir = [base.clone(), base.join("resources")]
-        .into_iter()
-        .find(|d| d.join("node.exe").exists() && d.join("dsh-runtime").is_dir());
-    let Some(resource_dir) = resource_dir else {
+    let Some(resource_dir) = find_resource_dir(app) else {
         eprintln!("dsh-desktop: plugin installer skipped (resources not found)");
         return;
     };
-    let home = if cfg!(debug_assertions) {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join("dsh-dev")
-    } else {
-        match app.path().app_config_dir() {
-            Ok(d) => d.join("dsh"),
-            Err(_) => {
-                eprintln!("dsh-desktop: plugin installer skipped (no app config dir)");
-                return;
-            }
-        }
+    let Some(home) = dsh_home_path(app) else {
+        eprintln!("dsh-desktop: plugin installer skipped (no app config dir)");
+        return;
     };
+
     let node_exe = resource_dir.join("node.exe");
     let script = resource_dir.join("plugin-install.js");
     let config = resource_dir.join("plugins.config.json");
@@ -181,7 +178,7 @@ fn install_plugins_now(app: &tauri::AppHandle) {
 }
 
 fn start_dsh(app: &tauri::App) -> Result<Child, Box<dyn std::error::Error>> {
-    let resource_dir = find_resource_dir(app)
+    let resource_dir = find_resource_dir(app.handle())
         .ok_or_else(|| "packaged resources (node.exe, dsh-runtime) not found".to_string())?;
     let runtime_dir = resource_dir.join("dsh-runtime");
     let node_exe = resource_dir.join("node.exe");
@@ -197,7 +194,7 @@ fn start_dsh(app: &tauri::App) -> Result<Child, Box<dyn std::error::Error>> {
     // dev builds (debug) use a dev-only home inside the build tree
     // (`<crate>/target/dsh-dev`) so dev sessions/credentials stay gitignored
     // and are wiped together with `cargo clean`.
-    let dsh_home = dsh_home_path(app)
+    let dsh_home = dsh_home_path(app.handle())
         .ok_or_else(|| "could not resolve dsh home".to_string())?;
     std::fs::create_dir_all(&dsh_home)?;
 
