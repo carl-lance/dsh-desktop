@@ -195,6 +195,30 @@
           "markdownDescription": "Allows the quit_app command to exit the application (used by the close-confirmation dialog)."
         },
         {
+          "description": "Allows requesting a main-window close (titlebar close button); CloseRequested still routes into the quit-confirmation dialog.",
+          "type": "string",
+          "const": "allow-window-close",
+          "markdownDescription": "Allows requesting a main-window close (titlebar close button); CloseRequested still routes into the quit-confirmation dialog."
+        },
+        {
+          "description": "Allows reading whether the main window is maximized (titlebar button glyph).",
+          "type": "string",
+          "const": "allow-window-is-maximized",
+          "markdownDescription": "Allows reading whether the main window is maximized (titlebar button glyph)."
+        },
+        {
+          "description": "Allows minimizing the main window (titlebar minimize button).",
+          "type": "string",
+          "const": "allow-window-minimize",
+          "markdownDescription": "Allows minimizing the main window (titlebar minimize button)."
+        },
+        {
+          "description": "Allows toggling the main window between maximized and restored (titlebar maximize button).",
+          "type": "string",
+          "const": "allow-window-toggle-maximize",
+          "markdownDescription": "Allows toggling the main window between maximized and restored (titlebar maximize button)."
+        },
+        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",

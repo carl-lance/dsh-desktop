@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
-use tauri::{Manager, RunEvent};
+use tauri::{Emitter, Manager, RunEvent};
 
 /// Port the web backend listens on. Dev builds (debug, `npm run dev`) use 30080
 /// so a dev instance can run alongside the installed app (which binds 3080) and
@@ -311,6 +311,49 @@ fn open_devtools(app: tauri::AppHandle) {
     let _ = app;
 }
 
+/// Main-window handle for the custom titlebar's window controls. The window is
+/// identified by its fixed label, so the injected script cannot address any
+/// other window.
+fn main_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    app.get_webview_window("main")
+        .ok_or_else(|| "main window not found".to_string())
+}
+
+/// Minimize the main window (titlebar minimize button).
+#[tauri::command]
+fn window_minimize(app: tauri::AppHandle) -> Result<(), String> {
+    main_window(&app)?.minimize().map_err(|e| e.to_string())
+}
+
+/// Toggle the main window between maximized and restored (titlebar maximize
+/// button). The window's own state is the source of truth, so the button stays
+/// correct when Windows snaps or maximizes the window by itself.
+#[tauri::command]
+fn window_toggle_maximize(app: tauri::AppHandle) -> Result<bool, String> {
+    let window = main_window(&app)?;
+    let maximized = window.is_maximized().map_err(|e| e.to_string())?;
+    if maximized {
+        window.unmaximize().map_err(|e| e.to_string())?;
+    } else {
+        window.maximize().map_err(|e| e.to_string())?;
+    }
+    Ok(!maximized)
+}
+
+/// Request a close of the main window (titlebar close button). This only emits
+/// `CloseRequested`; the handler below still intercepts it and runs the
+/// dsh-styled quit confirmation, so the titlebar button cannot bypass it.
+#[tauri::command]
+fn window_close(app: tauri::AppHandle) -> Result<(), String> {
+    main_window(&app)?.close().map_err(|e| e.to_string())
+}
+
+/// Whether the main window is currently maximized (titlebar button glyph).
+#[tauri::command]
+fn window_is_maximized(app: tauri::AppHandle) -> Result<bool, String> {
+    main_window(&app)?.is_maximized().map_err(|e| e.to_string())
+}
+
 /// JS injected into the webview when a close is requested. It renders a quit
 /// confirmation dialog styled after the dsh design system (mask + blurred
 /// backdrop, rounded card, outline cancel, danger-red confirm). The script
@@ -343,6 +386,14 @@ const CONTEXT_MENU_SCRIPT: &str = concat!(
 /// `open_url` command (see `assets/external-links.js`).
 const EXTERNAL_LINKS_SCRIPT: &str = include_str!("../assets/external-links.js");
 
+/// Titlebar script injected as a WebView2 initialization script: switches the
+/// dsh frontend into its Windows-caption layout (`data-windows-titlebar` +
+/// `--dsh-windows-titlebar-height`) and paints the app title plus the three
+/// self-drawn window controls on the reserved strip (see `assets/titlebar.js`).
+/// The native caption is gone because the window is created with
+/// `decorations(false)`.
+const TITLEBAR_SCRIPT: &str = include_str!("../assets/titlebar.js");
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -360,9 +411,16 @@ pub fn run() {
             .inner_size(980.0, 600.0)
             .min_inner_size(800.0, 600.0)
             .background_color(tauri::webview::Color(249, 250, 251, 255))
+            // The native Windows caption is replaced by the injected titlebar.
+            // `shadow(true)` restores the drop shadow and gives the frameless
+            // window rounded corners on Windows 11; tao already keeps a
+            // maximized frameless window inside the work area (WM_NCCALCSIZE).
+            .decorations(false)
+            .shadow(true)
             .enable_clipboard_access()
             .initialization_script(CONTEXT_MENU_SCRIPT)
             .initialization_script(EXTERNAL_LINKS_SCRIPT)
+            .initialization_script(TITLEBAR_SCRIPT)
             .on_new_window(|url, _features| {
                 // window.open / target=_blank are swallowed by the runtime by
                 // default; route them to the system browser instead.
@@ -385,15 +443,38 @@ pub fn run() {
                     Err(error.into())
                 }
             }        })
-        .invoke_handler(tauri::generate_handler![quit_app, open_url, open_devtools])
+        .invoke_handler(tauri::generate_handler![
+            quit_app,
+            open_url,
+            open_devtools,
+            window_minimize,
+            window_toggle_maximize,
+            window_close,
+            window_is_maximized
+        ])
         .on_window_event(|window, event| {
-            // Intercept window close: show the injected dsh-styled confirmation
-            // dialog instead of quitting immediately.
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                if let Some(webview) = window.app_handle().get_webview_window("main") {
-                    let _ = webview.eval(QUIT_CONFIRM_SCRIPT);
+            match event {
+                // Intercept window close: show the injected dsh-styled
+                // confirmation dialog instead of quitting immediately. The
+                // titlebar's close button routes through `window_close`, which
+                // only requests a close, so it lands here too.
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    api.prevent_close();
+                    if let Some(webview) = window.app_handle().get_webview_window("main") {
+                        let _ = webview.eval(QUIT_CONFIRM_SCRIPT);
+                    }
                 }
+                // Fullscreen drops the caption: the injected titlebar hides
+                // itself and releases the reserved strip (mirrors the dsh
+                // frontend's own [data-windows-titlebar][data-fullscreen] rule).
+                tauri::WindowEvent::Resized(_) => {
+                    if let Some(webview) = window.app_handle().get_webview_window("main") {
+                        if let Ok(fullscreen) = webview.is_fullscreen() {
+                            let _ = webview.emit("dsh-desktop://fullscreen", fullscreen);
+                        }
+                    }
+                }
+                _ => {}
             }
         })
         .build(tauri::generate_context!())

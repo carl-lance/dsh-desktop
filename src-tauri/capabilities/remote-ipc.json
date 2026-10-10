@@ -12,5 +12,15 @@
       "http://localhost:3080"
     ]
   },
-  "permissions": ["allow-quit-app", "allow-open-url", "allow-open-devtools"]
+  "permissions": [
+    "allow-quit-app",
+    "allow-open-url",
+    "allow-open-devtools",
+    "allow-window-minimize",
+    "allow-window-toggle-maximize",
+    "allow-window-close",
+    "allow-window-is-maximized",
+    "core:event:allow-listen",
+    "core:window:allow-start-dragging"
+  ]
 }

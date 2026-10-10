@@ -18,3 +18,7 @@ Thumbs.db
 # IDE
 .idea/
 .vscode/
+
+# Reference checkouts of upstream repos (e.g. deepseek-ai/deepseek-harness) used for
+# reading source while designing; not part of the build.
+.ref/

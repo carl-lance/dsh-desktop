@@ -1,0 +1,30 @@
+# Application permissions for the custom window-control commands.
+#
+# The injected titlebar (assets/titlebar.js) draws the three Windows caption
+# controls itself, because the native caption is removed by
+# `decorations(false)` on the main window. Tauri's built-in window commands
+# could do the same job, but their permissions are not in `core:default`, so
+# this shell declares three narrow commands instead — the same shape as the
+# existing allow-quit-app / allow-open-url entries.
+#
+# Referenced from capabilities/remote-ipc.json (the dsh web UI is served over
+# http://127.0.0.1:PORT, so its origin is remote to Tauri).
+[[permission]]
+identifier = "allow-window-minimize"
+description = "Allows minimizing the main window (titlebar minimize button)."
+commands.allow = ["window_minimize"]
+
+[[permission]]
+identifier = "allow-window-toggle-maximize"
+description = "Allows toggling the main window between maximized and restored (titlebar maximize button)."
+commands.allow = ["window_toggle_maximize"]
+
+[[permission]]
+identifier = "allow-window-close"
+description = "Allows requesting a main-window close (titlebar close button); CloseRequested still routes into the quit-confirmation dialog."
+commands.allow = ["window_close"]
+
+[[permission]]
+identifier = "allow-window-is-maximized"
+description = "Allows reading whether the main window is maximized (titlebar button glyph)."
+commands.allow = ["window_is_maximized"]
