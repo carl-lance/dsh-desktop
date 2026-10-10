@@ -328,16 +328,26 @@ fn window_minimize(app: tauri::AppHandle) -> Result<(), String> {
 /// Toggle the main window between maximized and restored (titlebar maximize
 /// button). The window's own state is the source of truth, so the button stays
 /// correct when Windows snaps or maximizes the window by itself.
+///
+/// The `resizable` / `maximizable` guards mirror Tauri's built-in
+/// `internal_toggle_maximize`, which is what double-clicking the caption runs;
+/// without them this button would resize a window that the double-click path
+/// correctly leaves alone. Returns the resulting maximized state.
 #[tauri::command]
 fn window_toggle_maximize(app: tauri::AppHandle) -> Result<bool, String> {
     let window = main_window(&app)?;
-    let maximized = window.is_maximized().map_err(|e| e.to_string())?;
-    if maximized {
-        window.unmaximize().map_err(|e| e.to_string())?;
-    } else {
-        window.maximize().map_err(|e| e.to_string())?;
+    if !window.is_resizable().map_err(|e| e.to_string())? {
+        return Ok(false);
     }
-    Ok(!maximized)
+    if window.is_maximized().map_err(|e| e.to_string())? {
+        window.unmaximize().map_err(|e| e.to_string())?;
+        return Ok(false);
+    }
+    if !window.is_maximizable().map_err(|e| e.to_string())? {
+        return Ok(false);
+    }
+    window.maximize().map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 /// Request a close of the main window (titlebar close button). This only emits

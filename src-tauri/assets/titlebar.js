@@ -157,12 +157,28 @@ html[data-windows-titlebar]{--dsh-frame-chrome-top:0px !important}
   }
 
   /* ---------- actions ---------- */
+  // A toggle round-trips through IPC, so a fast double click can start a second
+  // toggle before the first finishes and leave the window where it started.
+  // `maximizePending` drops those repeat clicks.
+  var maximizePending = false;
+
   function onClick(role) {
     if (role === 'minimize') return void invoke('window_minimize');
-    if (role === 'maximize') return void invoke('window_toggle_maximize').then(syncMaximized);
+    if (role === 'maximize') return void toggleMaximize();
     // close goes through Rust, which routes it into the existing
     // CloseRequested handler so the dsh-styled confirmation dialog still runs.
     if (role === 'close') return void invoke('window_close');
+  }
+
+  function toggleMaximize() {
+    if (maximizePending) return;
+    maximizePending = true;
+    invoke('window_toggle_maximize')
+      .then(syncMaximized)
+      .catch(reportIpcFailure('window_toggle_maximize'))
+      // Cleared in a finally-style step so a failed invoke cannot leave the
+      // button permanently unresponsive.
+      .then(function () { maximizePending = false; });
   }
 
   /**
@@ -171,14 +187,38 @@ html[data-windows-titlebar]{--dsh-frame-chrome-top:0px !important}
    * the user snaps or maximizes the window through Windows itself.
    */
   function syncMaximized() {
-    if (!maximizeBtn) return;
-    invoke('window_is_maximized').then(function (maximized) {
+    if (!maximizeBtn) return Promise.resolve();
+    return invoke('window_is_maximized').then(function (maximized) {
       var on = maximized === true;
       maximizeBtn.innerHTML = svg(on ? GLYPH.restore : GLYPH.maximize);
       var label = on ? '向下还原' : '最大化';
       maximizeBtn.title = label;
       maximizeBtn.setAttribute('aria-label', label);
-    });
+    }).catch(reportIpcFailure('window_is_maximized'));
+  }
+
+  /**
+   * Build a rejection handler for a titlebar IPC call. Failures leave the
+   * window usable (the caption keeps its last glyph) but must not become
+   * unhandled rejections, so they are logged once with the command name.
+   * @param {string} command - IPC command that failed, for the log line.
+   * @returns {(error: unknown) => void} handler suitable for `.catch`.
+   */
+  function reportIpcFailure(command) {
+    return function (error) {
+      if (window.console) console.warn('[dsh-titlebar] ' + command + ' failed', error);
+    };
+  }
+
+  // Resizing fires every frame while an edge is dragged, and the maximized
+  // state cannot change during a drag, so coalesce bursts into one query.
+  var syncTimer = 0;
+  function scheduleSyncMaximized() {
+    if (syncTimer) clearTimeout(syncTimer);
+    syncTimer = setTimeout(function () {
+      syncTimer = 0;
+      syncMaximized();
+    }, 150);
   }
 
   /* ---------- frontend caption switch + fullscreen ---------- */
@@ -232,7 +272,8 @@ html[data-windows-titlebar]{--dsh-frame-chrome-top:0px !important}
     build();
     syncMaximized();
     listenFullscreen();
-    window.addEventListener('resize', syncMaximized);
+    // Coalesced: an edge drag fires resize many times per second.
+    window.addEventListener('resize', scheduleSyncMaximized);
   }
 
   // The initialization script runs before the document root exists.
