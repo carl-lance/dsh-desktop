@@ -1,6 +1,6 @@
 [package]
 name = "dsh-desktop"
-version = "0.1.1"
+version = "0.2.0"
 description = "DeepSeek Harness desktop client (Tauri shell + Node sidecar)"
 edition = "2021"
 
@@ -23,6 +23,11 @@ windows-sys = { version = "0.59", features = [
   "Win32_Security",
   "Win32_System_JobObjects",
   "Win32_System_Threading",
+  # The window subclass that swallows the caption's right-click messages and
+  # anchors the Alt+Space system menu (ClientToScreen).
+  "Win32_Graphics_Gdi",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
 ] }
 
 [profile.release]

@@ -396,6 +396,29 @@ const CONTEXT_MENU_SCRIPT: &str = concat!(
 /// `open_url` command (see `assets/external-links.js`).
 const EXTERNAL_LINKS_SCRIPT: &str = include_str!("../assets/external-links.js");
 
+/// Caption-menu script injected as a WebView2 initialization script: builds the
+/// menu bar (帮助 → 关于) at the left end of the caption row, into the slot that
+/// `titlebar.js` publishes. Injected BEFORE the titlebar script, which mounts it
+/// through `window.__dshDesktopCaptionMenu.mount(slot)` once that slot exists.
+/// Lives in `assets/caption-menu.js`; adding a menu is an entry in its MENUS
+/// list, so no Rust change is needed for further menus.
+const CAPTION_MENU_SCRIPT: &str = include_str!("../assets/caption-menu.js");
+
+/// About-dialog script injected as a WebView2 initialization script: defines
+/// `window.__dshDesktopAbout`, the dsh-styled card the caption menu's 关于 item
+/// opens (see `assets/about-dialog.js`). Its DOM is built on the first `show()`,
+/// because an initialization script runs before the document root exists.
+///
+/// The app version is prepended from `env!("CARGO_PKG_VERSION")` — the same
+/// pattern as the dev-mode flag below — so Cargo.toml stays the single source
+/// and the dialog needs neither an IPC round-trip nor a new permission.
+const ABOUT_DIALOG_SCRIPT: &str = concat!(
+    "window.__dshAppVersion = \"",
+    env!("CARGO_PKG_VERSION"),
+    "\";\n",
+    include_str!("../assets/about-dialog.js")
+);
+
 /// Titlebar script injected as a WebView2 initialization script: switches the
 /// dsh frontend into its Windows-caption layout (`data-windows-titlebar` +
 /// `--dsh-windows-titlebar-height`) and paints the app title plus the three
@@ -403,6 +426,134 @@ const EXTERNAL_LINKS_SCRIPT: &str = include_str!("../assets/external-links.js");
 /// The native caption is gone because the window is created with
 /// `decorations(false)`.
 const TITLEBAR_SCRIPT: &str = include_str!("../assets/titlebar.js");
+
+/// Swallows the right-clicks that would raise the system menu on the window's
+/// real non-client area.
+///
+/// The caption row's menu had a different cause, and CSS fixes that one: wry
+/// turns WebView2's non-client region support on for every window
+/// (`webview2/mod.rs` → `SetIsNonClientRegionSupportEnabled(true)`), which makes
+/// the frontend's Electron-era `-webkit-app-region: drag` real — the rectangle it
+/// marks is non-client area, and a right-click there is handled as a caption
+/// right-click (还原/移动/大小/最小化/最大化/关闭) before any DOM event exists. That
+/// handling is WebView2's own and never reaches this procedure, so the injected
+/// stylesheets declare `no-drag` to carve those rectangles back out.
+///
+/// What is left is non-client area Windows itself owns — the resize border —
+/// where a right-click lands in `DefWindowProc` and raises the same menu. Those
+/// messages are swallowed here, through `SetWindowSubclass` (the mechanism tao
+/// uses for its own handling, so both chains stack). Everything else — edge
+/// resizing, dragging, the window controls — goes to `DefSubclassProc`
+/// untouched.
+///
+/// Alt+Space is the exception: that accelerator is kept, because it is the only
+/// way left to reach 移动/大小 with the keyboard. Only where the menu appears is
+/// taken over — see `popup_at_caption`.
+#[cfg(windows)]
+mod system_menu {
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+    use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
+    use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetSystemMenu, PostMessageW, TrackPopupMenu, HMENU, SC_KEYMENU, TPM_LEFTALIGN, TPM_RETURNCMD,
+        TPM_TOPALIGN, WM_CONTEXTMENU, WM_NCRBUTTONDOWN, WM_NCRBUTTONUP, WM_SYSCOMMAND,
+    };
+
+    /// This subclass's id in comctl32's per-window chain. tao holds 0, so any
+    /// other value keeps the two apart.
+    const SUBCLASS_ID: usize = 0x4453_4D;
+
+    /// `VK_SPACE`, which is what an Alt+Space `SC_KEYMENU` carries in `lparam`.
+    /// Spelled out because the named constant lives in
+    /// `Win32::UI::Input::KeyboardAndMouse` — another windows-sys feature for a
+    /// single number.
+    const VK_SPACE: LPARAM = 0x20;
+
+    /// The messages that end in a system menu: the two non-client right-button
+    /// messages `DefWindowProc` turns into one, plus the client-area equivalent
+    /// handed over once the page has cancelled its own menu.
+    unsafe extern "system" fn subclass_proc(
+        window: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        _id: usize,
+        _data: usize,
+    ) -> LRESULT {
+        match message {
+            WM_CONTEXTMENU | WM_NCRBUTTONDOWN | WM_NCRBUTTONUP => 0,
+            // Alt+Space, the one system menu that is kept: only its position is
+            // taken over. `SC_KEYMENU` carries Alt+<letter> as well, but this
+            // window has no menu bar to open, and every other `WM_SYSCOMMAND` —
+            // the commands the menu posts back included — has to reach the
+            // default handler.
+            WM_SYSCOMMAND if (wparam & 0xFFF0) as u32 == SC_KEYMENU && lparam == VK_SPACE => {
+                let menu = GetSystemMenu(window, 0);
+                if !menu.is_null() {
+                    return popup_at_caption(window, menu);
+                }
+                DefSubclassProc(window, message, wparam, lparam)
+            }
+            _ => DefSubclassProc(window, message, wparam, lparam),
+        }
+    }
+
+    /// Shows the system menu at the window's top-left corner and runs whatever
+    /// the user picked, the way the default handler would have.
+    ///
+    /// `DefWindowProc` answers the Alt+Space accelerator itself and it is also
+    /// what picks the coordinates: with a native caption the menu hangs off the
+    /// title-bar icon, and this window has neither icon nor caption, so the menu
+    /// ends up wherever the cursor happens to be. Popping it here pins it to the
+    /// window's top-left, and the rest of the accelerator is left intact — the
+    /// chosen command is posted back as `WM_SYSCOMMAND`, so 还原/移动/大小/
+    /// 最小化/最大化/关闭 still run through the system paths (`关闭` included:
+    /// the CloseRequested handler behind it is what raises the dsh-styled
+    /// confirmation). `TrackPopupMenu` sends `WM_INITMENU` on the way in, and
+    /// the default handler answers it, which is what keeps 最大化/还原 enabled
+    /// and labelled for the window's current state.
+    unsafe fn popup_at_caption(window: HWND, menu: HMENU) -> LRESULT {
+        // Client origin → screen. `GetWindowRect` would be the obvious source,
+        // but a maximized window reports its invisible resize border there, so
+        // the menu would hang off the work area's edge.
+        let mut point = POINT { x: 0, y: 0 };
+        ClientToScreen(window, &mut point);
+        // `TPM_RETURNCMD`: the command comes back to this call instead of
+        // arriving as a `WM_COMMAND` on the window, which this shell does not
+        // handle. The coordinates are screen ones, and the two alignment flags
+        // put the menu's top-left corner exactly on the client origin.
+        let command = TrackPopupMenu(
+            menu,
+            TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD,
+            point.x,
+            point.y,
+            0,
+            window,
+            std::ptr::null(),
+        );
+        // Posted rather than sent: the menu loop has only just unwound, and the
+        // default handler's own bookkeeping should run after this procedure
+        // returns. 0 means the menu was dismissed without a choice — nothing to
+        // run, and the message is consumed either way so the default handler
+        // does not pop a second menu at the cursor.
+        if command != 0 {
+            PostMessageW(window, WM_SYSCOMMAND, command as WPARAM, 0);
+        }
+        0
+    }
+
+    /// Installs the subclass on the main window. Called from `setup` because it
+    /// needs the window: the handle only exists once the window was built.
+    pub fn suppress(window: &tauri::WebviewWindow) {
+        let Ok(handle) = window.hwnd() else {
+            return;
+        };
+        let hwnd = handle.0 as HWND;
+        unsafe {
+            SetWindowSubclass(hwnd, Some(subclass_proc), SUBCLASS_ID, 0);
+        }
+    }
+}
 
 pub fn run() {
     tauri::Builder::default()
@@ -412,7 +563,7 @@ pub fn run() {
             // including reloads — the context menu must survive 刷新) and
             // enable clipboard read access for the injected context menu.
             // The window config was moved here from tauri.conf.json.
-            tauri::WebviewWindowBuilder::new(
+            let window = tauri::WebviewWindowBuilder::new(
                 app,
                 "main",
                 tauri::WebviewUrl::App("index.html".into()),
@@ -430,6 +581,10 @@ pub fn run() {
             .enable_clipboard_access()
             .initialization_script(CONTEXT_MENU_SCRIPT)
             .initialization_script(EXTERNAL_LINKS_SCRIPT)
+            // Order matters: the caption menu defines the API that the titlebar
+            // script mounts, and the about dialog is what that menu reaches for.
+            .initialization_script(ABOUT_DIALOG_SCRIPT)
+            .initialization_script(CAPTION_MENU_SCRIPT)
             .initialization_script(TITLEBAR_SCRIPT)
             .on_new_window(|url, _features| {
                 // window.open / target=_blank are swallowed by the runtime by
@@ -438,6 +593,12 @@ pub fn run() {
                 tauri::webview::NewWindowResponse::Deny
             })
             .build()?;
+
+            // No menu belongs over the caption — see `system_menu` for why this
+            // cannot be done from the page. Placed here rather than in `run`
+            // because it needs the built window's handle.
+            #[cfg(windows)]
+            system_menu::suppress(&window);
 
             // Plugin install now runs after the backend is ready
             // (see install_plugins_now in navigate_when_ready).

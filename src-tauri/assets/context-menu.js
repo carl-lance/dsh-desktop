@@ -18,6 +18,14 @@
  * (debug builds only — see the flag prepended in CONTEXT_MENU_SCRIPT), and
  * right-clicking an external link adds 打开外链 on top.
  *
+ * The caption band is excluded: that strip is window chrome — a drag surface,
+ * the caption menus, the window controls, and the sidebar controls the
+ * frontend pins into the row — not page content, so a right-click there opens
+ * nothing at all. The test is geometric, not structural: everything inside the
+ * strip's height is skipped even when the right-click lands on a node outside
+ * this script's own caption layer (the frontend's sidebar toggle / New Session
+ * buttons at the top-left are exactly that).
+ *
  * State is fully snapshotted at right-click time; the target element is held
  * by direct reference (`state.target`, no DOM marker) so menu rendering can
  * never invalidate it. Actions check `isConnected` before touching the node.
@@ -31,7 +39,7 @@
 
   /* ---------- styles (mirrors dsh menu component) ---------- */
   var CSS = `
-.dsh-ctx-menu{box-sizing:border-box;position:fixed;z-index:2147483647;min-width:163px;padding:4px;display:flex;flex-direction:column;gap:0;border:1px solid var(--dsw-alias-border-inverted,rgba(0,0,0,.06));border-radius:12px;background:var(--dsw-alias-bg-layer-2,#fff);box-shadow:var(--dsw-shadow-lv3,0 0 1px 0 rgba(0,0,0,.2),0 0 4px 0 rgba(0,0,0,.02),0 12px 32px 0 rgba(0,0,0,.08));color:var(--dsw-alias-label-primary,#0f1115);font-family:var(--ds-font-family-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif)}
+.dsh-ctx-menu{box-sizing:border-box;-webkit-app-region:no-drag;position:fixed;z-index:2147483647;min-width:163px;padding:4px;display:flex;flex-direction:column;gap:0;border:1px solid var(--dsw-alias-border-inverted,rgba(0,0,0,.06));border-radius:12px;background:var(--dsw-alias-bg-layer-2,#fff);box-shadow:var(--dsw-shadow-lv3,0 0 1px 0 rgba(0,0,0,.2),0 0 4px 0 rgba(0,0,0,.02),0 12px 32px 0 rgba(0,0,0,.08));color:var(--dsw-alias-label-primary,#0f1115);font-family:var(--ds-font-family-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif)}
 .dsh-ctx-item{display:flex;align-items:center;gap:8px;width:100%;min-height:40px;padding:8px 10px;border:none;border-radius:10px;background:transparent;cursor:pointer;font-size:14px;line-height:22px;color:inherit;text-align:left;font-family:inherit}
 .dsh-ctx-item:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.08))}
 .dsh-ctx-item:disabled{opacity:.4;cursor:not-allowed}
@@ -55,6 +63,28 @@
 
   var MENU_ID = 'dsh-desktop-ctx-menu';
   var STYLE_ID = 'dsh-desktop-ctx-style';
+  // The caption band's root, built by titlebar.js. The band spans the full
+  // width, so anything a right-click can land on inside it — the drag layer,
+  // the caption menus, a window button — is a descendant of this node.
+  var TITLEBAR_ID = 'dsh-desktop-titlebar';
+  // Fallback for the caption strip's height when titlebar.js has not published
+  // --dsh-windows-titlebar-height (and a build that declares no variable at all).
+  var TITLEBAR_H = 40;
+
+  /**
+   * Height of the reserved caption strip, straight from the variable the
+   * frontend lays that strip out with: 40px normally, 0px in full screen, where
+   * there is no caption and nothing to exclude. This is the one source that also
+   * holds while titlebar.js's own layer is hidden or not yet built.
+   * @returns {number} the strip height in CSS pixels.
+   */
+  function captionStripHeight() {
+    var raw = window.getComputedStyle
+      ? getComputedStyle(document.documentElement).getPropertyValue('--dsh-windows-titlebar-height')
+      : '';
+    var n = parseFloat(raw);
+    return isNaN(n) ? TITLEBAR_H : n;
+  }
 
   /* ---------- helpers ---------- */
   function esc(s) {
@@ -362,6 +392,36 @@
   /* ---------- right-click interception (capture phase wins over page handlers) ---------- */
   document.addEventListener('contextmenu', function (e) {
     var target = e.target;
+
+    // The caption band is chrome, and this menu is for page content: it has
+    // nothing to say about a drag surface or a window button, so it is not
+    // offered there. Nothing stands in for it either — the native caption menu
+    // cannot reach this window (the subclass in src/lib.rs drops the
+    // non-client right-button messages), so a right-click on the band is inert.
+    // A hidden band is no exception: its `display:none` keeps any click from
+    // landing inside it, so full screen falls through to the normal path.
+    //
+    // The height test is what makes the whole strip inert, not just this
+    // layer's own nodes: the frontend pins its sidebar toggle and New Session
+    // buttons into that same row at the top-left, they are NOT children of
+    // `#dsh-desktop-titlebar`, and a right-click on them must stay as silent as
+    // one on the drag area. Their own handlers are left alone — this only keeps
+    // the page-content menu out of the strip. Full screen sets the variable to
+    // 0px, so the test goes quiet with the caption.
+    //
+    // Gated on button 2 because the event carries no usable coordinates when a
+    // keyboard menu key raised it (those arrive as 0,0) — and that menu is a
+    // deliberate request from the focused element, which no strip rule should
+    // swallow.
+    var band = document.getElementById(TITLEBAR_ID);
+    var inStrip = e.button === 2 && e.clientY < captionStripHeight();
+    if (target && ((band && band.contains(target)) || inStrip)) {
+      e.preventDefault();
+      e.stopPropagation();
+      hideMenu();
+      return;
+    }
+
     var editable = isEditable(target);
 
     state.editable = editable;
